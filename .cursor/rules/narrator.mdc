@@ -1,0 +1,42 @@
+---
+description: Narrator v2 TTS platform — architectural invariants (single-box KVM 2). Always apply when editing this repo.
+globs:
+alwaysApply: true
+---
+
+# Narrator v2 — Project Invariants
+
+`ARCHITECTURE.md` (v2) is the source of truth. Never contradict it; propose a doc edit first if a change is needed. All compute runs on the Hostinger KVM 2 — never introduce external GPUs, tunnels, or third-party inference APIs.
+
+## Boundaries
+- Pipeline/API code imports ONLY `src/narrator/core/protocols.py` (`TTSEngine`, `ContentProcessor`, `StorageBackend`, `Chunker`); concretes are chosen only in `core/factory.py` from settings.
+- The engine is reached only via `TTS_BASE_URL` (OpenAI-compatible `/v1/audio/speech`). Inference code (onnxruntime/kokoro-onnx) lives ONLY in `services/tts/` — never in `src/narrator/`. No torch anywhere.
+- All tunables via `core/config.py` (pydantic-settings) with fail-fast boot validation. No magic numbers in pipeline code.
+
+## Resilience (the point of this system)
+- Every external call goes through `core/retry.py` policies wrapped by `core/breaker.py` — never ad-hoc try/sleep loops. Respect the §14 retry matrix: never retry auth failures, safety blocks, or `storageQuotaExceeded`.
+- Delivery failures are NEVER job failures: terminal Drive errors ⇒ `UPLOAD_PENDING` with a local downloadable artifact and cron/manual retry.
+- `manifest.json` schema (§6) is frozen; writes atomic (tmp + `os.replace`). Resume must validate existing chunks (RIFF header, size, sha256) and re-synthesize corrupt/mismatched ones only.
+- Check the cancel flag and (bulk lane) `core/gate.bulk_wait_turn()` between chunks; fast-lane preemption must remain ≤ one chunk of latency.
+- SIGTERM in workers = graceful: finish/abort current chunk, flush manifest, re-enqueue own job, exit within stop_grace_period. Deploys must never lose work.
+- One poisoned chunk never fails a job: sanitize → one aggressive re-clean → silence placeholder + warning, governed by `MAX_FAILED_CHUNK_PCT`.
+
+## Memory & CPU discipline (2 vCPU / 8 GB shared box)
+- Never hold an upload, chunk set, or final audio in RAM: stream uploads ≤1 MB blocks; audio via ffmpeg subprocess on files (own process group, killpg on cancel); Drive uploads resumable from path; no pydub.
+- No blocking I/O in async paths (`asyncio.to_thread` for the Drive SDK, aiosqlite for the ledger). One shared `httpx.AsyncClient` per process. Synthesis parallelism only via the `SYNTH_CONCURRENCY` semaphore; exactly one synthesis stream owns the CPU (the Redis synth gate).
+- Respect compose `mem_limit`/`cpu_shares` values in ARCHITECTURE §13 — narrator must lose CPU contention to the user's website.
+
+## Synthesis cache
+- Cache key = `sha256(engine_model | voice | speed | sanitized_text)`; store under `/data/cache/tts/{k[:2]}/{k}.wav`; index in SQLite `cache_index`; hourly LRU eviction to `CACHE_MAX_GB`. Cache reads hard-link, never copy.
+
+## State & observability
+- Every transition through `core/state.py` (SQLite truth + Redis mirror + `job:{id}:events`); surface breaker pauses as `stall_reason`, never as errors.
+- structlog JSON only, always with `job_id` (+ `stage`, `chunk_idx`). Per-chunk logs at DEBUG; INFO is per-stage. No `print`.
+
+## Explainer mode
+- `google-genai` SDK; model from `GEMINI_MODEL` env only. Sections ≤ 30k chars; strict JSON map outputs; grounding rule: every number/name/date in the script must exist in the source pool — one regeneration, then attach a warning. Safety block ⇒ verbatim fallback for that section. Prompts live only in `processors/prompts.py`. Narration output is plain spoken text with `[pause:ms]` markers — no markdown/bullets/citations.
+
+## Security & workflow
+- Secrets only via env; `.env.example` kept current. Only `api` is publicly exposed. Drive uses the OAuth refresh-token flow with `drive.file` scope — never service-account keys.
+- Python 3.12 · uv · ruff · pytest(+asyncio, respx, fakeredis). Tests mock all external services; chaos tests (`tests/chaos/`) must stay green — kill/restart/disk-full scenarios converge without corrupt artifacts.
+- After any change: `uv run ruff check . && uv run pytest -q` before declaring done. Follow `CURSOR_PROMPT.md` phase order and acceptance gates.

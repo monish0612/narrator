@@ -1,0 +1,90 @@
+# Narrator v2 - Coolify Docker Compose resource (ARCHITECTURE.md section 13).
+# Domain: expose ONLY the `api` service (port 8000). tts/redis/workers stay
+# internal. Secrets (API_KEYS, GEMINI_API_KEY, GDRIVE_*) come from Coolify's env
+# tab; hard mem_limits + low cpu_shares keep narrator subordinate to the website.
+
+x-app-env: &app-env
+  REDIS_URL: redis://redis:6379/0
+  TTS_BASE_URL: http://tts:8880/v1
+  DATA_DIR: /data
+  API_KEYS: ${API_KEYS}
+  STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+  GDRIVE_CLIENT_ID: ${GDRIVE_CLIENT_ID:-}
+  GDRIVE_CLIENT_SECRET: ${GDRIVE_CLIENT_SECRET:-}
+  GDRIVE_REFRESH_TOKEN: ${GDRIVE_REFRESH_TOKEN:-}
+  GDRIVE_ROOT_FOLDER_NAME: ${GDRIVE_ROOT_FOLDER_NAME:-Narrator}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+  WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+
+services:
+  api:
+    build: {context: ., dockerfile: docker/api.Dockerfile}
+    environment:
+      <<: *app-env
+    volumes: ["narrator-data:/data"]
+    depends_on: [redis]
+    mem_limit: 512m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  worker-fast:
+    build: {context: ., dockerfile: docker/worker.Dockerfile}
+    environment:
+      <<: *app-env
+      WORKER_LANE: fast
+      QUEUE: fast
+      SYNTH_CONCURRENCY: ${SYNTH_CONCURRENCY:-2}
+    volumes: ["narrator-data:/data"]
+    depends_on: [redis, tts]
+    mem_limit: 384m
+    cpu_shares: 256
+    stop_grace_period: 150s
+    restart: unless-stopped
+
+  worker-bulk:
+    build: {context: ., dockerfile: docker/worker.Dockerfile}
+    environment:
+      <<: *app-env
+      WORKER_LANE: bulk
+      QUEUE: bulk
+      SYNTH_CONCURRENCY: ${SYNTH_CONCURRENCY:-2}
+    volumes: ["narrator-data:/data"]
+    depends_on: [redis, tts]
+    mem_limit: 640m
+    cpu_shares: 256
+    stop_grace_period: 150s
+    restart: unless-stopped
+
+  tts:
+    build: {context: ., dockerfile: services/tts/Dockerfile}
+    environment:
+      ONNX_INTRA_OP: ${ONNX_INTRA_OP:-2}
+    volumes: ["tts-models:/models"]
+    mem_limit: 1024m
+    cpus: "2.0"
+    cpu_shares: 512
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8880/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
+    volumes: ["redis-data:/data"]
+    mem_limit: 192m
+    restart: unless-stopped
+
+volumes:
+  narrator-data: {}
+  tts-models: {}
+  redis-data: {}

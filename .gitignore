@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.uv/
+
+# Env / secrets
+.env
+.env.local
+*.pem
+secrets/
+scripts/*_token.json
+
+# Data / runtime
+data/
+/data/
+models/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+
+# Test / tooling caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# OS / editor
+.DS_Store
+Thumbs.db

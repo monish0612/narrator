@@ -1,0 +1,27 @@
+# Local dev override: publishes ports to the host and mounts source for reload.
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+# Provide secrets via a local .env (never committed) - see .env.example.
+
+services:
+  api:
+    ports: ["8000:8000"]
+    volumes:
+      - "narrator-data:/data"
+      - "./src:/app/src:ro"
+    command: ["uvicorn", "narrator.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  worker-fast:
+    volumes:
+      - "narrator-data:/data"
+      - "./src:/app/src:ro"
+
+  worker-bulk:
+    volumes:
+      - "narrator-data:/data"
+      - "./src:/app/src:ro"
+
+  tts:
+    ports: ["8880:8880"]
+
+  redis:
+    ports: ["6379:6379"]
