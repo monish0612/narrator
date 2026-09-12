@@ -132,7 +132,8 @@ class LlmClient:
             return self.model
 
         for candidate in (
-            f"hf.co/unsloth/Qwen3.5-4B-GGUF:Q4_K_M",
+            "qwen3.5:4b",
+            "hf.co/unsloth/Qwen3.5-4B-GGUF:Q4_K_M",
             "oamazonasgabriel/qwen3.5-4b",
         ):
             log.info("llm.pull", name=candidate)
@@ -142,12 +143,28 @@ class LlmClient:
                     json={"name": candidate, "stream": False},
                     timeout=1800,
                 )
-                if resp.status_code < 400:
-                    self.model = candidate
-                    if await self.model_ready():
-                        return self.model
-                    log.warning("llm.pull_not_ready", name=candidate)
-                log.warning("llm.pull_rejected", name=candidate, status=resp.status_code)
+                if resp.status_code >= 400:
+                    log.warning("llm.pull_rejected", name=candidate, status=resp.status_code)
+                    continue
+                alias = (
+                    f"FROM {candidate}\n"
+                    "PARAMETER num_ctx 8192\n"
+                    "PARAMETER num_thread 2\n"
+                    "PARAMETER temperature 0.4\n"
+                )
+                created = await self._http.post(
+                    f"{self.base}/api/create",
+                    json={"name": self.model, "modelfile": alias, "stream": False},
+                    timeout=600,
+                )
+                if created.status_code < 400 and await self.model_ready():
+                    return self.model
+                previous = self.model
+                self.model = candidate
+                if await self.model_ready():
+                    return self.model
+                self.model = previous
+                log.warning("llm.pull_not_ready", name=candidate)
             except Exception as exc:
                 log.warning("llm.pull_failed", name=candidate, error=str(exc)[:200])
         raise LlmError(
