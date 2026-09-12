@@ -51,7 +51,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 8
-      start_period: 180s
+      start_period: 600s
     restart: unless-stopped
     labels:
       - traefik.enable=false
@@ -66,7 +66,7 @@ services:
       dockerfile: narration/Dockerfile
     hostname: narration-orchestrator
     environment:
-      REDIS_URL: ${NARRATION_REDIS_URL}
+      REDIS_URL: ${REDIS_URL}
       REDIS_KEY_PREFIX: narration:
       REDIS_TTL_SECONDS: "259200"
       NARRATION_API_KEY: ${NARRATION_API_KEY}

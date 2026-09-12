@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 
-    redis_url: str = Field(..., min_length=8)
+    redis_url: str = Field(..., min_length=8, validation_alias=AliasChoices("REDIS_URL", "NARRATION_REDIS_URL"))
     redis_key_prefix: str = "narration:"
     redis_ttl_seconds: int = 259200
 

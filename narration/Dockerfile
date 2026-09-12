@@ -25,15 +25,13 @@ RUN pip install \
 COPY narration/src /app/src
 COPY narration/start.sh /app/start.sh
 
-RUN useradd --create-home --uid 10001 appuser \
-    && mkdir -p /data \
-    && chown -R appuser:appuser /app /data \
+RUN mkdir -p /data \
     && chmod +x /app/start.sh
-USER appuser
 
 EXPOSE 8870
 
-HEALTHCHECK --interval=30s --timeout=8s --retries=5 --start-period=25s \
+# /data is a Coolify volume (root-owned). Stay root so writes succeed.
+HEALTHCHECK --interval=30s --timeout=8s --retries=8 --start-period=40s \
     CMD curl -fsS http://127.0.0.1:8870/healthz || exit 1
 
-CMD ["/app/start.sh"]
+CMD ["sh", "-c", "mkdir -p /data && exec /app/start.sh"]

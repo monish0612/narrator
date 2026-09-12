@@ -25,14 +25,9 @@ RUN pip install \
 
 COPY services/tts /app/tts
 
-# Non-root user; /models is a mounted volume owned by root by default, so make
-# it writable for the download step.
-RUN useradd --create-home --uid 10001 appuser \
-    && mkdir -p /models \
-    && chown -R appuser:appuser /app /models
-USER appuser
+RUN mkdir -p /models
 
 EXPOSE 8880
 
-# Download+verify models (idempotent), then serve.
-CMD ["sh", "-c", "python -m tts.download_models && exec uvicorn tts.main:app --host 0.0.0.0 --port 8880"]
+# Volume mounts overlay /models as root; stay root so first-boot download works.
+CMD ["sh", "-c", "mkdir -p /models && python -m tts.download_models && exec uvicorn tts.main:app --host 0.0.0.0 --port 8880"]
