@@ -237,6 +237,7 @@ class Pipeline:
             dest = self.store.tmp_wav(cache, i)
             dest.write_bytes(wav_bytes)
             wavs.append(dest)
+        log.info("tts.chunks", cache_key=cache, n=len(wavs), bytes=[p.stat().st_size for p in wavs])
         concat = self.store.tmp / self.store.shard(cache) / f"{cache}.concat.wav"
         await concat_wavs(wavs, concat)
         metrics = await qa_wav(concat)

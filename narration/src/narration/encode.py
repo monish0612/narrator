@@ -32,24 +32,39 @@ async def _run(args: list[str]) -> tuple[int, str]:
 
 async def concat_wavs(paths: list[Path], dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    listing = dest.with_suffix(".concat.txt")
-    listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in paths), encoding="utf-8")
-    code, err = await _run(
+    if not paths:
+        raise EncodeError("concat failed: no wav chunks")
+    for i, p in enumerate(paths):
+        raw = p.read_bytes()[:12] if p.exists() else b""
+        if len(raw) < 12 or raw[:4] != b"RIFF":
+            raise EncodeError(f"concat failed: chunk {i} is not a wav ({p.name})")
+    if len(paths) == 1:
+        dest.write_bytes(paths[0].read_bytes())
+        return
+
+    # Kokoro chunks can differ in rate/layout; -c copy then fails with
+    # "Invalid data found when processing input". Resample into one stream.
+    args: list[str] = ["ffmpeg", "-y"]
+    for p in paths:
+        args.extend(["-i", str(p)])
+    n = len(paths)
+    streams = "".join(f"[{i}:a]" for i in range(n))
+    args.extend(
         [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(listing),
-            "-c",
-            "copy",
+            "-filter_complex",
+            f"{streams}concat=n={n}:v=0:a=1[a]",
+            "-map",
+            "[a]",
+            "-ac",
+            "1",
+            "-ar",
+            "24000",
+            "-c:a",
+            "pcm_s16le",
             str(dest),
         ]
     )
-    listing.unlink(missing_ok=True)
+    code, err = await _run(args)
     if code != 0:
         raise EncodeError(f"concat failed: {err[-400:]}")
 
