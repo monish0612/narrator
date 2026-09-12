@@ -117,7 +117,7 @@ class Pipeline:
         await self._ram_gate(cache)
 
         lock = lock_key(self.store.prefix, cache)
-        got = await self.store._r.set(lock, article_id, nx=True, ex=1800)
+        got = await self.store._r.set(lock, article_id, nx=True, ex=3600)
         if not got:
             # Another job owns this cache key — waiters just poll article status.
             await self._set_article(article_id, cache_key=cache, status=STATUS_QUEUED)
@@ -191,18 +191,21 @@ class Pipeline:
         except RamDeferred:
             raise
         except Exception as exc:
-            log.error("pipeline.fail", article_id=article_id, error=str(exc)[:300])
+            err = f"{type(exc).__name__}: {exc}".strip()
+            if err.endswith(":"):
+                err = type(exc).__name__
+            log.error("pipeline.fail", article_id=article_id, error=err[:300])
             tripped = await self.breaker.record_failure(article_id)
             if tripped:
                 await self.tg.send(format_alert("breaker open — on-device fallback", breaker=self.breaker.name))
-            await self.tg.send(format_alert("synthesis failed", article=article_id, error=str(exc)[:180]))
+            await self.tg.send(format_alert("synthesis failed", article=article_id, error=err[:180]))
             await self._set_article(
                 article_id,
                 cache_key=cache,
                 status=STATUS_FALLBACK,
-                reason=str(exc)[:200],
+                reason=err[:200],
             )
-            return {"status": STATUS_FALLBACK, "cache_key": cache, "reason": str(exc)[:200]}
+            return {"status": STATUS_FALLBACK, "cache_key": cache, "reason": err[:200]}
         finally:
             await self.store._r.delete(lock)
 

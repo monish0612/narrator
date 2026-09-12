@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     ram_alert_floor_bytes: int = 524_288_000
     breaker_threshold: int = 3
     breaker_cooldown_s: int = 900
-    job_timeout_s: int = 1800
+    job_timeout_s: int = 2700
 
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""

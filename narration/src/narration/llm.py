@@ -36,7 +36,7 @@ class LlmClient:
         model: str,
         *,
         gguf_path: str,
-        timeout: float = 420,
+        timeout: float = 1500,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.base = base_url.rstrip("/")
@@ -44,7 +44,9 @@ class LlmClient:
         self.gguf_path = gguf_path
         self.num_ctx = 8192
         self._own = client is None
-        self._http = client or httpx.AsyncClient(timeout=timeout)
+        self._http = client or httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout, connect=30.0)
+        )
 
     async def aclose(self) -> None:
         if self._own:
@@ -63,8 +65,14 @@ class LlmClient:
                 "temperature": temperature,
                 "max_tokens": max_tokens,
                 "keep_alive": "5m",
-                # Qwen3.5 native context cannot fit the 4.5 GB cap.
-                "options": {"num_ctx": self.num_ctx, "num_thread": 2},
+                # Qwen3.5 is a thinking model; traces burn the 2-core budget
+                # before any spoken script appears.
+                "think": False,
+                "options": {
+                    "num_ctx": self.num_ctx,
+                    "num_thread": 2,
+                    "think": False,
+                },
             },
         )
         if resp.status_code >= 400:

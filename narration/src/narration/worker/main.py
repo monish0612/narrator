@@ -123,7 +123,7 @@ class WorkerSettings:
         )
     ]
     max_jobs = 1
-    job_timeout = 1800
+    job_timeout = 2700
     max_tries = 3
     on_startup = startup
     on_shutdown = shutdown

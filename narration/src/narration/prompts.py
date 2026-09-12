@@ -18,7 +18,9 @@ _PLAIN_RULES = (
     "- Write 8 to 12 short paragraphs. Each paragraph is 2 to 4 sentences.\n"
     "- Aim for spoken length of about nine minutes at a calm pace "
     "(roughly thirteen hundred to fourteen hundred and fifty words). "
-    "Prefer slightly short over rambling."
+    "Prefer slightly short over rambling.\n"
+    "- Write the listener-facing script directly. No hidden reasoning, "
+    "planning notes, or think tags."
 )
 
 PLAIN_EXPLAINER = (

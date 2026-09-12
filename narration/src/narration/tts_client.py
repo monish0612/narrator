@@ -14,10 +14,10 @@ class TtsError(Exception):
 
 
 class TtsClient:
-    def __init__(self, base_url: str, *, timeout: float = 600, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(self, base_url: str, *, timeout: float = 1500, client: httpx.AsyncClient | None = None) -> None:
         self.base = base_url.rstrip("/")
         self._own = client is None
-        self._http = client or httpx.AsyncClient(timeout=timeout)
+        self._http = client or httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=30.0))
 
     async def aclose(self) -> None:
         if self._own:
