@@ -118,15 +118,15 @@ async def ffprobe_duration_s(path: Path) -> float:
         raise EncodeError("ffprobe duration unreadable") from exc
 
 
-async def qa_wav(wav: Path) -> dict[str, float | bool]:
-    """silencedetect + astats. Returns metrics; caller decides fail vs warn."""
+async def qa_wav(wav: Path) -> dict[str, float | bool | None]:
+    """silencedetect + overall astats. Returns metrics; caller decides fail vs warn."""
     code, err = await _run(
         [
             "ffmpeg",
             "-i",
             str(wav),
             "-af",
-            "silencedetect=noise=-40dB:d=0.5,astats=metadata=1:reset=1",
+            "silencedetect=noise=-40dB:d=0.5,astats",
             "-f",
             "null",
             "-",
@@ -136,24 +136,28 @@ async def qa_wav(wav: Path) -> dict[str, float | bool]:
     rms = [float(x) for x in _RMS.findall(err)]
     peaks = [float(x) for x in _PEAK.findall(err)]
     total_silence = sum(silences)
-    peak = max(peaks) if peaks else -99.0
-    rms_db = rms[-1] if rms else -99.0
-    clipped = peak >= -0.1
+    peak = max(peaks) if peaks else None
+    # reset=1 used to take the last (often silent) frame. Overall max RMS is the file.
+    rms_db = max(rms) if rms else None
+    clipped = peak is not None and peak >= -0.1
     return {
         "ffmpeg_ok": code == 0,
         "silence_s": total_silence,
-        "peak_db": peak,
-        "rms_db": rms_db,
+        "peak_db": peak if peak is not None else -99.0,
+        "rms_db": rms_db if rms_db is not None else -99.0,
+        "rms_parsed": bool(rms),
         "clipped": clipped,
     }
 
 
-def qa_should_fail(metrics: dict[str, float | bool], duration_s: float) -> str | None:
+def qa_should_fail(metrics: dict[str, float | bool | None], duration_s: float) -> str | None:
     if metrics.get("clipped"):
         return "clipped"
     silence = float(metrics.get("silence_s") or 0)
     if duration_s > 0 and silence / duration_s > 0.25:
         return "too_much_silence"
+    if metrics.get("rms_parsed") is False:
+        return None
     rms = float(metrics.get("rms_db") or -99)
     if rms < -40:
         return "inaudible"

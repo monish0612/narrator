@@ -242,6 +242,15 @@ class Pipeline:
         await concat_wavs(wavs, concat)
         metrics = await qa_wav(concat)
         duration = await ffprobe_duration_s(concat)
+        log.info(
+            "qa.metrics",
+            cache_key=cache,
+            duration_s=round(duration, 1),
+            rms_db=metrics.get("rms_db"),
+            peak_db=metrics.get("peak_db"),
+            silence_s=metrics.get("silence_s"),
+            rms_parsed=metrics.get("rms_parsed"),
+        )
         opus = self.store.opus_path(cache)
         await encode_opus(concat, opus, bitrate=self.bitrate)
         if hd:

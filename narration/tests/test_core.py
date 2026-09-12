@@ -99,8 +99,9 @@ def test_ram_gate_from_meminfo():
 def test_qa_fail_rules():
     assert qa_should_fail({"clipped": True, "silence_s": 0, "rms_db": -16}, 100) == "clipped"
     assert qa_should_fail({"clipped": False, "silence_s": 40, "rms_db": -16}, 100) == "too_much_silence"
-    assert qa_should_fail({"clipped": False, "silence_s": 1, "rms_db": -50}, 100) == "inaudible"
+    assert qa_should_fail({"clipped": False, "silence_s": 1, "rms_db": -50, "rms_parsed": True}, 100) == "inaudible"
     assert qa_should_fail({"clipped": False, "silence_s": 1, "rms_db": -16}, 100) is None
+    assert qa_should_fail({"clipped": False, "silence_s": 1, "rms_db": -99, "rms_parsed": False}, 100) is None
 
 
 def test_range_header_parse():
