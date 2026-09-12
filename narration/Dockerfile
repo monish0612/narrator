@@ -26,6 +26,7 @@ COPY narration/src /app/src
 COPY narration/start.sh /app/start.sh
 
 RUN mkdir -p /data \
+    && sed -i 's/\r$//' /app/start.sh \
     && chmod +x /app/start.sh
 
 EXPOSE 8870

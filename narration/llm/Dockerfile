@@ -13,7 +13,8 @@ ENV OLLAMA_HOST=0.0.0.0 \
 
 COPY narration/llm/entrypoint.sh /usr/local/bin/narration-llm-entrypoint.sh
 COPY narration/llm/Modelfile /opt/narration/Modelfile
-RUN chmod +x /usr/local/bin/narration-llm-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/narration-llm-entrypoint.sh \
+    && chmod +x /usr/local/bin/narration-llm-entrypoint.sh
 
 EXPOSE 11434
 
