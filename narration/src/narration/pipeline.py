@@ -231,6 +231,8 @@ class Pipeline:
         self, cache: str, script: str, speed: float, *, hd: bool
     ) -> tuple[Any, float, dict]:
         chunks = pack_chunks(script)
+        if not chunks:
+            raise LlmError("empty script; nothing to synthesize")
         wavs = []
         for i, chunk in enumerate(chunks):
             wav_bytes = await self.tts.synthesize(chunk, voice=self.voice, speed=speed)

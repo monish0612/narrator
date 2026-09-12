@@ -53,35 +53,43 @@ class LlmClient:
             await self._http.aclose()
 
     async def chat(self, system: str, user: str, *, temperature: float = 0.4, max_tokens: int = 4096) -> str:
-        url = f"{self.base}/v1/chat/completions"
+        # Native /api/chat honors think=false; the OpenAI shim often leaves content empty.
         resp = await self._http.post(
-            url,
+            f"{self.base}/api/chat",
             json={
                 "model": self.model,
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                "keep_alive": "5m",
-                # Qwen3.5 is a thinking model; traces burn the 2-core budget
-                # before any spoken script appears.
+                "stream": False,
                 "think": False,
+                "keep_alive": "5m",
                 "options": {
                     "num_ctx": self.num_ctx,
                     "num_thread": 2,
-                    "think": False,
+                    "temperature": temperature,
+                    "num_predict": max_tokens,
                 },
             },
         )
         if resp.status_code >= 400:
             raise LlmError(f"llm http {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
-        try:
-            return str(data["choices"][0]["message"]["content"]).strip()
-        except (KeyError, IndexError, TypeError) as exc:
-            raise LlmError(f"malformed llm response: {exc}") from exc
+        msg = data.get("message") if isinstance(data, dict) else None
+        if not isinstance(msg, dict):
+            msg = {}
+        text = str(msg.get("content") or "").strip()
+        if not text:
+            choices = data.get("choices") if isinstance(data, dict) else None
+            if isinstance(choices, list) and choices:
+                try:
+                    text = str(choices[0]["message"]["content"] or "").strip()
+                except (KeyError, IndexError, TypeError):
+                    text = ""
+        if not text:
+            raise LlmError("empty llm content")
+        return text
 
     async def tags(self) -> list[str]:
         try:
@@ -204,6 +212,8 @@ class LlmClient:
             script = await self.chat(PLAIN_EXPLAINER, build_plain_user(title, source, article_text))
 
         script = _strip_think(_strip_fences(script))
+        if word_count(script) < 40:
+            raise LlmError("script too short after think-strip")
         if word_count(script) > word_max:
             compressed = await self.chat(
                 COMPRESS_SYSTEM.format(n=word_max),
@@ -220,8 +230,11 @@ def _strip_think(text: str) -> str:
     t = text or ""
     while True:
         start = t.find("<think>")
+        if start < 0:
+            break
         end = t.find("</think>")
-        if start < 0 or end < 0 or end < start:
+        if end < 0 or end < start:
+            t = t[:start].strip()
             break
         t = (t[:start] + t[end + len("</think>") :]).strip()
     return t.strip()

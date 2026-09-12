@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import time
 
 import redis.asyncio as redis
 from arq import create_pool
@@ -139,7 +140,7 @@ def create_app() -> FastAPI:
             await app.state.pool.enqueue_job(
                 "generate_narration",
                 body.model_dump(),
-                _job_id=f"nar:{cache}",
+                _job_id=f"nar:{cache}:{body.article_id}:{int(time.time())}",
             )
             # Short enqueue lock — the worker takes a longer one.
             await app.state.redis.delete(lock)

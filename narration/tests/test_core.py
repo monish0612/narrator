@@ -83,6 +83,7 @@ def test_relevance_parser():
     think = '<think>nope</think>{"relevant": false, "reason": "x", "parallel": ""}'
     assert _parse_relevance(think) == (False, "")
     assert _strip_think("hello <think>secret</think> world") == "hello  world"
+    assert _strip_think("<think>all thinking, no close") == ""
 
 
 def test_ram_gate_from_meminfo():
