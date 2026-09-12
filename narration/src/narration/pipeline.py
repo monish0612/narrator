@@ -91,6 +91,7 @@ class Pipeline:
         )
 
     async def _set_article(self, article_id: str, **fields: Any) -> None:
+        fields.pop("article_id", None)
         prev = await self.store.get_article(article_id) or {}
         prev.update(fields)
         prev.setdefault("article_id", article_id)
