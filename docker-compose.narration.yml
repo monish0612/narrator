@@ -1,0 +1,110 @@
+# Article narration stack. No host ports. Joins the existing Coolify network
+# so ainexus can reach http://narration-orchestrator:8870 without publishing 8080/8090.
+# Redis is the existing Coolify Redis (DB 1) — do not add a Redis service here.
+#
+# Network aliases are required: Coolify container names are UUIDs, so ainexus
+# (on the coolify network) can only resolve these DNS names via aliases.
+
+services:
+  narration-llm:
+    build:
+      context: .
+      dockerfile: narration/llm/Dockerfile
+    hostname: narration-llm
+    environment:
+      OLLAMA_HOST: 0.0.0.0
+      OLLAMA_KEEP_ALIVE: 5m
+      LLM_MODEL: qwen3.5-4b
+      GGUF_PATH: /models/Qwen3.5-4B-Q4_K_M.gguf
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    volumes:
+      - narration-ollama:/root/.ollama
+      - narration-gguf:/models
+    mem_limit: 4500m
+    cpu_shares: 256
+    expose:
+      - "11434"
+    restart: unless-stopped
+    labels:
+      - traefik.enable=false
+    networks:
+      coolify:
+        aliases:
+          - narration-llm
+
+  narration-tts:
+    build:
+      context: .
+      dockerfile: services/tts/Dockerfile
+    hostname: narration-tts
+    environment:
+      ONNX_INTRA_OP: "2"
+    volumes:
+      - narration-tts-models:/models
+    mem_limit: 1200m
+    cpu_shares: 512
+    expose:
+      - "8880"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8880/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 8
+      start_period: 180s
+    restart: unless-stopped
+    labels:
+      - traefik.enable=false
+    networks:
+      coolify:
+        aliases:
+          - narration-tts
+
+  narration-orchestrator:
+    build:
+      context: .
+      dockerfile: narration/Dockerfile
+    hostname: narration-orchestrator
+    environment:
+      REDIS_URL: ${NARRATION_REDIS_URL}
+      REDIS_KEY_PREFIX: narration:
+      REDIS_TTL_SECONDS: "259200"
+      NARRATION_API_KEY: ${NARRATION_API_KEY}
+      DATA_DIR: /data
+      TTS_BASE_URL: http://narration-tts:8880/v1
+      TTS_VOICE: am_onyx
+      TTS_SPEED: "0.9"
+      LLM_BASE_URL: http://narration-llm:11434
+      LLM_MODEL: qwen3.5-4b
+      MODEL_VERSION: qwen3.5-4b-q4km+kokoro-int8-v1.0
+      AUDIO_FORMAT: opus
+      AUDIO_BITRATE: "32000"
+      HD_BITRATE: "48000"
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    volumes:
+      - narration-data:/data
+    mem_limit: 768m
+    cpu_shares: 256
+    expose:
+      - "8870"
+    depends_on:
+      - narration-tts
+      - narration-llm
+    restart: unless-stopped
+    labels:
+      - traefik.enable=false
+    networks:
+      coolify:
+        aliases:
+          - narration-orchestrator
+
+networks:
+  coolify:
+    external: true
+
+volumes:
+  narration-ollama: {}
+  narration-gguf: {}
+  narration-tts-models: {}
+  narration-data: {}

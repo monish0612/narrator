@@ -139,7 +139,8 @@ class KokoroEngine:
             return False
 
     async def warmup(self) -> None:
-        await self.synthesize("Narrator is ready.", voice="af_heart", speed=1.0)
+        voice = "am_onyx" if "am_onyx" in self._voices else (self._voices[0] if self._voices else "am_onyx")
+        await self.synthesize("Narration is ready.", voice=voice, speed=0.9)
         self._ready = True
 
     # --- properties ----------------------------------------------------------

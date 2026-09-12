@@ -24,8 +24,8 @@ class SpeechRequest(BaseModel):
 
     model: str = "kokoro-int8"
     input: str = Field(..., min_length=1)
-    voice: str = "af_heart"
-    speed: float = Field(1.0, ge=0.5, le=2.0)
+    voice: str = "am_onyx"
+    speed: float = Field(0.9, ge=0.5, le=2.0)
     response_format: str = "wav"
 
 
