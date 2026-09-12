@@ -91,9 +91,22 @@ class LlmClient:
                 return True
         return False
 
+    async def model_ready(self) -> bool:
+        try:
+            resp = await self._http.post(f"{self.base}/api/show", json={"name": self.model})
+            return resp.status_code < 400
+        except Exception:
+            return False
+
     async def ensure_model(self) -> str:
-        names = await self.tags()
-        if self.model_present(names):
+        if await self.model_ready():
+            return self.model
+        names: list[str] = []
+        try:
+            names = await self.tags()
+        except LlmError as exc:
+            log.warning("llm.tags_unready", error=str(exc)[:200])
+        if self.model_present(names) and await self.model_ready():
             return self.model
         gguf = Path(self.gguf_path)
         if gguf.is_file():
@@ -111,6 +124,11 @@ class LlmClient:
             )
             if resp.status_code >= 400:
                 raise LlmError(f"create from gguf failed: {resp.status_code} {resp.text[:300]}")
+            if not await self.model_ready():
+                raise LlmError("gguf imported but ollama /api/show failed")
+            return self.model
+
+        if await self.model_ready():
             return self.model
 
         for candidate in (
@@ -126,7 +144,9 @@ class LlmClient:
                 )
                 if resp.status_code < 400:
                     self.model = candidate
-                    return self.model
+                    if await self.model_ready():
+                        return self.model
+                    log.warning("llm.pull_not_ready", name=candidate)
                 log.warning("llm.pull_rejected", name=candidate, status=resp.status_code)
             except Exception as exc:
                 log.warning("llm.pull_failed", name=candidate, error=str(exc)[:200])
