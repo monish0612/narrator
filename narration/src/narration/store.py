@@ -103,3 +103,19 @@ class Store:
             if created and (now - created) >= max_age_s:
                 out.append(str(data.get("cache_key") or meta.stem))
         return out
+
+    def iter_stale_tmp(self, *, max_age_s: int, now: float) -> list[Path]:
+        """Tmp wavs left behind if a job was killed after Clear All."""
+        out: list[Path] = []
+        if not self.tmp.exists():
+            return out
+        for p in self.tmp.glob("*/*"):
+            if not p.is_file():
+                continue
+            try:
+                age = now - p.stat().st_mtime
+            except OSError:
+                continue
+            if age >= max_age_s:
+                out.append(p)
+        return out

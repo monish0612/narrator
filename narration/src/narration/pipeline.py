@@ -22,6 +22,7 @@ from narration.normalize import build_cache_key
 from narration.prompts import word_count
 from narration.ram_gate import mem_available_bytes, next_backoff_s, should_defer
 from narration.store import (
+    STATUS_DELETED,
     STATUS_FALLBACK,
     STATUS_GENERATING,
     STATUS_QUEUED,
@@ -38,6 +39,15 @@ class RamDeferred(Exception):
     def __init__(self, delay_s: int) -> None:
         super().__init__(f"ram defer {delay_s}s")
         self.delay_s = delay_s
+
+
+class ArticleDropped(Exception):
+    """Article was Clear All / deleted while this job was running."""
+
+    def __init__(self, article_id: str, cache: str) -> None:
+        super().__init__(article_id)
+        self.article_id = article_id
+        self.cache = cache
 
 
 class Pipeline:
@@ -95,9 +105,17 @@ class Pipeline:
         # **fields, not collide with the positional argument (TypeError).
         fields.pop("article_id", None)
         prev = await self.store.get_article(article_id) or {}
+        if prev.get("status") == STATUS_DELETED and fields.get("status") != STATUS_DELETED:
+            return
         prev.update(fields)
         prev.setdefault("article_id", article_id)
         await self.store.bind_article(article_id, prev)
+
+    async def _abort_if_dropped(self, article_id: str, cache: str) -> None:
+        live = await self.store.get_article(article_id)
+        if live and live.get("status") == STATUS_DELETED:
+            await delete_artifacts(self.store, cache)
+            raise ArticleDropped(article_id, cache)
 
     async def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
         article_id = str(payload["article_id"])
@@ -108,6 +126,13 @@ class Pipeline:
         hd = bool(payload.get("hd") or self.hd)
         cache = self.cache_for(text)
 
+        prev = await self.store.get_article(article_id)
+        if prev and prev.get("status") == STATUS_DELETED:
+            for key in {cache, prev.get("cache_key")}:
+                if key:
+                    await delete_artifacts(self.store, str(key))
+            return {"status": STATUS_DELETED, "reason": "article_dropped"}
+
         existing = await self.store.get_cache(cache)
         if existing and existing.get("status") == STATUS_READY:
             # Merge so cache_key/status/article_id in `existing` cannot collide
@@ -116,6 +141,9 @@ class Pipeline:
                 article_id,
                 **{**existing, "cache_key": cache, "status": STATUS_READY},
             )
+            live = await self.store.get_article(article_id)
+            if live and live.get("status") == STATUS_DELETED:
+                return {"status": STATUS_DELETED, "reason": "article_dropped"}
             return {"status": STATUS_READY, "cache_key": cache, "cache_hit": True}
 
         if await self.breaker.is_open():
@@ -132,8 +160,10 @@ class Pipeline:
             return {"status": STATUS_QUEUED, "cache_key": cache, "reason": "lock_held"}
 
         await self._set_article(article_id, cache_key=cache, status=STATUS_GENERATING)
+        await self._abort_if_dropped(article_id, cache)
         try:
             await self.llm.ensure_model()
+            await self._abort_if_dropped(article_id, cache)
             script = await self.llm.generate_script(
                 title=title,
                 source=source,
@@ -142,15 +172,21 @@ class Pipeline:
                 word_min=self.word_min,
                 word_max=self.word_max,
             )
+            await self._abort_if_dropped(article_id, cache)
             self.store.write_script(cache, script)
             wpm_words = word_count(script)
 
             speed = self.speed
-            opus, duration, metrics = await self._synth_and_encode(cache, script, speed, hd=hd)
+            opus, duration, metrics = await self._synth_and_encode(
+                cache, script, speed, hd=hd, article_id=article_id
+            )
             if duration > self.max_duration_s:
                 bump = min(1.1, round(speed * 1.08, 2))
                 log.warning("duration.over_cap", duration_s=duration, retry_speed=bump)
-                opus, duration, metrics = await self._synth_and_encode(cache, script, bump, hd=hd)
+                await self._abort_if_dropped(article_id, cache)
+                opus, duration, metrics = await self._synth_and_encode(
+                    cache, script, bump, hd=hd, article_id=article_id
+                )
                 if duration > self.max_duration_s:
                     await self.tg.send(
                         format_alert(
@@ -163,6 +199,8 @@ class Pipeline:
             reason = qa_should_fail(metrics, duration)
             if reason:
                 raise TtsError(f"qa_fail:{reason}")
+
+            await self._abort_if_dropped(article_id, cache)
 
             wpm = (wpm_words / (duration / 60.0)) if duration else 0.0
             record = {
@@ -179,6 +217,7 @@ class Pipeline:
                 "article_id": article_id,
             }
             await self.store.put_cache(cache, record)
+            await self._abort_if_dropped(article_id, cache)
             await self._set_article(article_id, **record)
             reset = await self.breaker.record_success()
             if reset:
@@ -198,7 +237,15 @@ class Pipeline:
             return {"status": STATUS_READY, "cache_key": cache, "duration_s": duration}
         except RamDeferred:
             raise
+        except ArticleDropped:
+            await delete_artifacts(self.store, cache)
+            log.info("pipeline.dropped", article_id=article_id, cache_key=cache)
+            return {"status": STATUS_DELETED, "cache_key": cache, "reason": "article_dropped"}
         except Exception as exc:
+            live = await self.store.get_article(article_id)
+            if live and live.get("status") == STATUS_DELETED:
+                await delete_artifacts(self.store, cache)
+                return {"status": STATUS_DELETED, "cache_key": cache, "reason": "article_dropped"}
             err = f"{type(exc).__name__}: {exc}".strip()
             if err.endswith(":"):
                 err = type(exc).__name__
@@ -215,6 +262,9 @@ class Pipeline:
             )
             return {"status": STATUS_FALLBACK, "cache_key": cache, "reason": err[:200]}
         finally:
+            live = await self.store.get_article(article_id)
+            if live and live.get("status") == STATUS_DELETED:
+                await delete_artifacts(self.store, cache)
             await self.store._r.delete(lock)
 
     async def _ram_gate(self, cache: str) -> None:
@@ -236,17 +286,21 @@ class Pipeline:
         raise RamDeferred(delay)
 
     async def _synth_and_encode(
-        self, cache: str, script: str, speed: float, *, hd: bool
+        self, cache: str, script: str, speed: float, *, hd: bool, article_id: str = ""
     ) -> tuple[Any, float, dict]:
         chunks = pack_chunks(script)
         if not chunks:
             raise LlmError("empty script; nothing to synthesize")
         wavs = []
         for i, chunk in enumerate(chunks):
+            if article_id:
+                await self._abort_if_dropped(article_id, cache)
             wav_bytes = await self.tts.synthesize(chunk, voice=self.voice, speed=speed)
             dest = self.store.tmp_wav(cache, i)
             dest.write_bytes(wav_bytes)
             wavs.append(dest)
+            if article_id:
+                await self._abort_if_dropped(article_id, cache)
         log.info("tts.chunks", cache_key=cache, n=len(wavs), bytes=[p.stat().st_size for p in wavs])
         concat = self.store.tmp / self.store.shard(cache) / f"{cache}.concat.wav"
         await concat_wavs(wavs, concat)
@@ -271,8 +325,63 @@ class Pipeline:
         return opus, duration, metrics
 
 
-async def complete_listen(store: Store, cache: str, telegram: Telegram) -> bool:
-    async def exhausted(err: str) -> None:
-        await telegram.send(format_alert("delete exhausted", cache_key=cache, error=err[:180]))
+async def mark_listened(
+    store: Store,
+    *,
+    article_id: str | None,
+    cache: str | None,
+) -> dict[str, Any]:
+    """Listen finished: keep opus for replay. Files go away on /v1/drop or the 48h reaper."""
+    rec: dict[str, Any] = {}
+    if article_id:
+        rec = await store.get_article(article_id) or {}
+    cache_key = cache or rec.get("cache_key")
+    if rec.get("status") == STATUS_DELETED:
+        return {
+            "ok": False,
+            "deleted": False,
+            "reason": "article_dropped",
+            "cache_key": cache_key,
+        }
+    if article_id:
+        rec["article_id"] = article_id
+        rec["cache_key"] = cache_key
+        rec["listened"] = True
+        rec["listened_at"] = time.time()
+        rec.setdefault("status", STATUS_READY)
+        await store.bind_article(article_id, rec)
+    return {"ok": True, "deleted": False, "cache_key": cache_key}
 
-    return await delete_artifacts(store, cache, on_exhausted=exhausted)
+
+async def drop_article_audio(
+    store: Store,
+    article_id: str,
+    telegram: Telegram | None = None,
+) -> dict[str, Any]:
+    """Clear All / delete article: drop opus + script + redis for that id."""
+    rec = await store.get_article(article_id) or {}
+    cache = rec.get("cache_key")
+    # Mark deleted first so an in-flight generate cannot bind READY.
+    await store.bind_article(
+        article_id,
+        {
+            "article_id": article_id,
+            "cache_key": cache,
+            "status": STATUS_DELETED,
+            "reason": "article_removed",
+        },
+    )
+    deleted_ok = True
+    if cache:
+        async def exhausted(err: str) -> None:
+            if telegram is not None:
+                await telegram.send(
+                    format_alert("delete exhausted", cache_key=cache, error=err[:180])
+                )
+
+        deleted_ok = await delete_artifacts(
+            store,
+            str(cache),
+            on_exhausted=exhausted if telegram is not None else None,
+        )
+    return {"deleted": deleted_ok, "article_id": article_id, "cache_key": cache}

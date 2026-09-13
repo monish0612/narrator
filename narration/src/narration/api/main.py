@@ -19,8 +19,8 @@ from narration.keys import lock_key
 from narration.llm import LlmClient
 from narration.logging import configure_logging, get_logger
 from narration.normalize import build_cache_key
-from narration.pipeline import complete_listen
-from narration.store import STATUS_FALLBACK, STATUS_QUEUED, STATUS_READY, Store
+from narration.pipeline import drop_article_audio, mark_listened
+from narration.store import STATUS_DELETED, STATUS_FALLBACK, STATUS_QUEUED, STATUS_READY, Store
 from narration.telegram import Telegram
 from narration.tts_client import TtsClient
 
@@ -35,11 +35,17 @@ class JobIn(BaseModel):
     text: str = Field(..., min_length=1)
     hd: bool = False
     voice: str | None = None
+    force: bool = False
 
 
 class CompleteIn(BaseModel):
     cache_key: str | None = None
     article_id: str | None = None
+
+
+class DropIn(BaseModel):
+    article_id: str | None = None
+    article_ids: list[str] = Field(default_factory=list)
 
 
 def _auth(settings, x_api_key: str | None) -> None:
@@ -117,6 +123,21 @@ def create_app() -> FastAPI:
             audio_format=s.audio_format,
             bitrate=s.audio_bitrate,
         )
+        existing_art = await store.get_article(body.article_id)
+        if existing_art and existing_art.get("status") == STATUS_DELETED:
+            removed = existing_art.get("reason") == "article_removed"
+            if removed or not body.force:
+                return {"status": STATUS_DELETED, "reason": "article_dropped"}
+            await store.bind_article(
+                body.article_id,
+                {
+                    "article_id": body.article_id,
+                    "cache_key": cache,
+                    "status": STATUS_QUEUED,
+                    "reason": "resurrect_replay",
+                },
+            )
+
         hit = await store.get_cache(cache)
         if hit and hit.get("status") == STATUS_READY:
             await store.bind_article(
@@ -185,20 +206,28 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/complete")
     async def complete(body: CompleteIn, _: None = Depends(require_key)):
+        return await mark_listened(
+            app.state.store,
+            article_id=body.article_id,
+            cache=body.cache_key,
+        )
+
+    @app.post("/v1/drop")
+    async def drop(body: DropIn, _: None = Depends(require_key)):
         store: Store = app.state.store
-        cache = body.cache_key
-        if not cache and body.article_id:
-            rec = await store.get_article(body.article_id)
-            cache = (rec or {}).get("cache_key")
-        if not cache:
-            raise HTTPException(status_code=400, detail="cache_key required")
-        ok = await complete_listen(store, cache, app.state.tg)
+        ids: list[str] = []
         if body.article_id:
-            await store.bind_article(
-                body.article_id,
-                {"article_id": body.article_id, "cache_key": cache, "status": "deleted"},
-            )
-        return {"deleted": ok, "cache_key": cache}
+            ids.append(body.article_id)
+        ids.extend(body.article_ids)
+        seen: set[str] = set()
+        results = []
+        for aid in ids:
+            aid = str(aid or "").strip()
+            if not aid or aid in seen:
+                continue
+            seen.add(aid)
+            results.append(await drop_article_audio(store, aid, app.state.tg))
+        return {"dropped": len(results), "results": results}
 
     return app
 

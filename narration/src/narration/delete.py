@@ -43,17 +43,16 @@ async def delete_artifacts(
     if not got:
         await asyncio.sleep(0.05)
     last_err = ""
-    paths = [
-        store.opus_path(cache),
-        store.opus_path(cache, hd=True),
-        store.meta_path(cache),
-        store.script_path(cache),
-    ]
-    tmp_dir = store.tmp / store.shard(cache)
-    if tmp_dir.exists():
-        paths.extend(tmp_dir.glob(f"{cache}.*"))
-
     for i in range(attempts):
+        paths = [
+            store.opus_path(cache),
+            store.opus_path(cache, hd=True),
+            store.meta_path(cache),
+            store.script_path(cache),
+        ]
+        tmp_dir = store.tmp / store.shard(cache)
+        if tmp_dir.exists():
+            paths.extend(tmp_dir.glob(f"{cache}.*"))
         try:
             for p in paths:
                 await _unlink(p)

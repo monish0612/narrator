@@ -13,7 +13,7 @@ from narration.delete import delete_artifacts
 from narration.llm import LlmClient
 from narration.logging import configure_logging, get_logger
 from narration.pipeline import Pipeline, RamDeferred
-from narration.store import Store
+from narration.store import STATUS_DELETED, Store
 from narration.telegram import Telegram, format_alert
 from narration.tts_client import TtsClient
 
@@ -24,9 +24,29 @@ REAPER_AGE_S = 48 * 3600
 
 async def generate_narration(ctx, payload: dict) -> dict:
     pipe: Pipeline = ctx["pipeline"]
+    store: Store = ctx["store"]
+    article_id = str(payload.get("article_id") or "")
+    rec = await store.get_article(article_id) if article_id else None
+    if rec and rec.get("status") == STATUS_DELETED:
+        keys = {rec.get("cache_key")}
+        if payload.get("text"):
+            keys.add(pipe.cache_for(str(payload.get("text"))))
+        for cache in keys:
+            if cache:
+                await delete_artifacts(store, str(cache))
+        return {"status": STATUS_DELETED, "reason": "article_dropped"}
     try:
         return await pipe.generate(payload)
     except RamDeferred as exc:
+        rec = await store.get_article(article_id) if article_id else None
+        if rec and rec.get("status") == STATUS_DELETED:
+            keys = {rec.get("cache_key")}
+            if payload.get("text"):
+                keys.add(pipe.cache_for(str(payload.get("text"))))
+            for cache in keys:
+                if cache:
+                    await delete_artifacts(store, str(cache))
+            return {"status": STATUS_DELETED, "reason": "article_dropped"}
         await ctx["redis"].enqueue_job(
             "generate_narration",
             payload,
@@ -52,6 +72,12 @@ async def reaper(ctx) -> dict:
         else:
             failed += 1
             await tg.send(format_alert("reaper delete failed", cache_key=cache))
+    stale_tmp = store.iter_stale_tmp(max_age_s=3 * 3600, now=now)
+    for p in stale_tmp:
+        try:
+            p.unlink()
+        except OSError:
+            failed += 1
     if scanned or failed:
         await tg.send(format_alert("reaper", scanned=scanned, deleted=deleted, failed=failed))
     log.info("reaper.done", scanned=scanned, deleted=deleted, failed=failed)
