@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 
 from narration.logging import get_logger
@@ -11,6 +13,9 @@ log = get_logger("narration.tts")
 
 class TtsError(Exception):
     pass
+
+
+_RETRYABLE = (httpx.TransportError, httpx.TimeoutException)
 
 
 class TtsClient:
@@ -32,18 +37,26 @@ class TtsClient:
 
     async def synthesize(self, text: str, *, voice: str, speed: float) -> bytes:
         url = f"{self.base}/audio/speech"
-        resp = await self._http.post(
-            url,
-            json={
-                "model": "kokoro-int8",
-                "input": text,
-                "voice": voice,
-                "speed": speed,
-                "response_format": "wav",
-            },
-        )
-        if resp.status_code >= 400:
-            raise TtsError(f"tts http {resp.status_code}: {resp.text[:300]}")
-        if not resp.content or resp.content[:4] != b"RIFF":
-            raise TtsError("tts returned non-wav payload")
-        return resp.content
+        last: Exception | None = None
+        for attempt in range(3):
+            try:
+                resp = await self._http.post(
+                    url,
+                    json={
+                        "model": "kokoro-int8",
+                        "input": text,
+                        "voice": voice,
+                        "speed": speed,
+                        "response_format": "wav",
+                    },
+                )
+                if resp.status_code >= 400:
+                    raise TtsError(f"tts http {resp.status_code}: {resp.text[:300]}")
+                if not resp.content or resp.content[:4] != b"RIFF":
+                    raise TtsError("tts returned non-wav payload")
+                return resp.content
+            except _RETRYABLE as exc:
+                last = exc
+                log.warning("tts.retry", attempt=attempt + 1, error=str(exc)[:200])
+                await asyncio.sleep(1.5 * (attempt + 1))
+        raise TtsError(f"tts disconnected: {last}") from last

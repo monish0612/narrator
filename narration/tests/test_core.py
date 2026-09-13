@@ -103,6 +103,8 @@ def test_qa_fail_rules():
     assert qa_should_fail({"clipped": False, "silence_s": 1, "rms_db": -50, "rms_parsed": True}, 100) == "inaudible"
     assert qa_should_fail({"clipped": False, "silence_s": 1, "rms_db": -16}, 100) is None
     assert qa_should_fail({"clipped": False, "silence_s": 1, "rms_db": -99, "rms_parsed": False}, 100) is None
+    # Peak at 0 dBFS is normal for TTS; only the clipped flag fails the job.
+    assert qa_should_fail({"clipped": False, "silence_s": 2, "rms_db": -14, "peak_db": 0.0}, 80) is None
 
 
 def test_range_header_parse():
@@ -182,3 +184,44 @@ async def test_store_roundtrip(store):
     await store.bind_article("news-1", {"article_id": "news-1", "cache_key": "abc", "status": "ready"})
     art = await store.get_article("news-1")
     assert art["cache_key"] == "abc"
+
+
+async def test_breaker_auto_resets_after_cooldown(redis):
+    clock = {"t": 100.0}
+    br = PipelineBreaker(
+        redis,
+        "narration:",
+        "pipeline",
+        threshold=3,
+        cooldown_s=10,
+        clock=lambda: clock["t"],
+    )
+    await br.record_failure("a1")
+    await br.record_failure("a2")
+    await br.record_failure("a3")
+    assert await br.is_open() is True
+    clock["t"] = 109.0
+    assert await br.is_open() is True
+    clock["t"] = 111.0
+    assert await br.is_open() is False
+
+
+async def test_set_article_survives_article_id_in_kwargs(store):
+    from narration.pipeline import Pipeline
+
+    class Holder:
+        pass
+
+    holder = Holder()
+    holder.store = store
+    await Pipeline._set_article(
+        holder,
+        "news-bind",
+        article_id="news-bind",
+        cache_key="abc",
+        status="ready",
+    )
+    art = await store.get_article("news-bind")
+    assert art["article_id"] == "news-bind"
+    assert art["cache_key"] == "abc"
+    assert art["status"] == "ready"

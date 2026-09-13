@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,9 @@ class LlmError(Exception):
     pass
 
 
+_RETRYABLE = (httpx.TransportError, httpx.TimeoutException)
+
+
 class LlmClient:
     def __init__(
         self,
@@ -53,6 +57,21 @@ class LlmClient:
             await self._http.aclose()
 
     async def chat(self, system: str, user: str, *, temperature: float = 0.4, max_tokens: int = 4096) -> str:
+        last: Exception | None = None
+        for attempt in range(3):
+            try:
+                return await self._chat_once(
+                    system, user, temperature=temperature, max_tokens=max_tokens
+                )
+            except _RETRYABLE as exc:
+                last = exc
+                log.warning("llm.chat_retry", attempt=attempt + 1, error=str(exc)[:200])
+                await asyncio.sleep(1.5 * (attempt + 1))
+        raise LlmError(f"llm disconnected: {last}") from last
+
+    async def _chat_once(
+        self, system: str, user: str, *, temperature: float, max_tokens: int
+    ) -> str:
         # Native /api/chat honors think=false; the OpenAI shim often leaves content empty.
         resp = await self._http.post(
             f"{self.base}/api/chat",

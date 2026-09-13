@@ -28,8 +28,16 @@ def range_file_response(path: Path, request: Request, *, media_type: str = "audi
     if not m:
         return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
     start_s, end_s = m.group(1), m.group(2)
-    start = int(start_s) if start_s else 0
-    end = int(end_s) if end_s else size - 1
+    if not start_s and end_s:
+        # RFC 7233 suffix-byte-range: bytes=-N is the last N bytes.
+        suffix = int(end_s)
+        if suffix <= 0:
+            return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+        start = max(0, size - suffix)
+        end = size - 1
+    else:
+        start = int(start_s) if start_s else 0
+        end = int(end_s) if end_s else size - 1
     if start >= size or end < start:
         return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
     end = min(end, size - 1)

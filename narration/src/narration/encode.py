@@ -13,6 +13,7 @@ log = get_logger("narration.encode")
 _SILENCE_DUR = re.compile(r"silence_duration:\s*([0-9.]+)")
 _RMS = re.compile(r"RMS level dB:\s*([-\d.]+)")
 _PEAK = re.compile(r"Peak level dB:\s*([-\d.]+)")
+_CLIPPED_SAMPLES = re.compile(r"Number of clipped samples:\s*(\d+)")
 
 
 class EncodeError(Exception):
@@ -135,11 +136,17 @@ async def qa_wav(wav: Path) -> dict[str, float | bool | None]:
     silences = [float(x) for x in _SILENCE_DUR.findall(err)]
     rms = [float(x) for x in _RMS.findall(err)]
     peaks = [float(x) for x in _PEAK.findall(err)]
+    clipped_counts = [int(x) for x in _CLIPPED_SAMPLES.findall(err)]
     total_silence = sum(silences)
     peak = max(peaks) if peaks else None
     # reset=1 used to take the last (often silent) frame. Overall max RMS is the file.
     rms_db = max(rms) if rms else None
-    clipped = peak is not None and peak >= -0.1
+    # Kokoro often peaks at ~0 dB FS without actually clipping. Fail only
+    # when astats reports clipped samples (true digital overs).
+    clipped_n = max(clipped_counts) if clipped_counts else 0
+    clipped = clipped_n > 0
+    if peak is not None and peak >= -0.1 and clipped_n == 0:
+        log.info("qa.peak_near_fs", peak_db=peak, clipped_samples=clipped_n)
     return {
         "ffmpeg_ok": code == 0,
         "silence_s": total_silence,
@@ -147,6 +154,7 @@ async def qa_wav(wav: Path) -> dict[str, float | bool | None]:
         "rms_db": rms_db if rms_db is not None else -99.0,
         "rms_parsed": bool(rms),
         "clipped": clipped,
+        "clipped_samples": float(clipped_n),
     }
 
 

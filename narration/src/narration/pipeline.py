@@ -90,7 +90,9 @@ class Pipeline:
             bitrate=self.bitrate,
         )
 
-    async def _set_article(self, article_id: str, **fields: Any) -> None:
+    async def _set_article(self, article_id: str, /, **fields: Any) -> None:
+        # Cache/ready records also carry article_id. That key must land in
+        # **fields, not collide with the positional argument (TypeError).
         fields.pop("article_id", None)
         prev = await self.store.get_article(article_id) or {}
         prev.update(fields)
@@ -108,7 +110,12 @@ class Pipeline:
 
         existing = await self.store.get_cache(cache)
         if existing and existing.get("status") == STATUS_READY:
-            await self._set_article(article_id, cache_key=cache, status=STATUS_READY, **existing)
+            # Merge so cache_key/status/article_id in `existing` cannot collide
+            # with explicit keywords (TypeError at the call site).
+            await self._set_article(
+                article_id,
+                **{**existing, "cache_key": cache, "status": STATUS_READY},
+            )
             return {"status": STATUS_READY, "cache_key": cache, "cache_hit": True}
 
         if await self.breaker.is_open():

@@ -44,6 +44,7 @@ async def reaper(ctx) -> dict:
     keys = store.iter_expired_meta(max_age_s=REAPER_AGE_S, now=now)
     deleted = 0
     failed = 0
+    scanned = len(keys)
     for cache in keys:
         ok = await delete_artifacts(store, cache)
         if ok:
@@ -52,9 +53,9 @@ async def reaper(ctx) -> dict:
             failed += 1
             await tg.send(format_alert("reaper delete failed", cache_key=cache))
     if scanned or failed:
-        await tg.send(format_alert("reaper", scanned=len(keys), deleted=deleted, failed=failed))
-    log.info("reaper.done", scanned=len(keys), deleted=deleted, failed=failed)
-    return {"scanned": len(keys), "deleted": deleted, "failed": failed}
+        await tg.send(format_alert("reaper", scanned=scanned, deleted=deleted, failed=failed))
+    log.info("reaper.done", scanned=scanned, deleted=deleted, failed=failed)
+    return {"scanned": scanned, "deleted": deleted, "failed": failed}
 
 
 async def startup(ctx) -> None:
