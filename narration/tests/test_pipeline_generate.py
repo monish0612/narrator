@@ -405,6 +405,27 @@ def test_worker_skips_dropped_before_generate_and_sweeps_tmp():
     assert "iter_stale_tmp" in src
     assert "article_dropped" in src
     assert "max_jobs = 1" in src
+    assert "REAPER_AGE_S = 168 * 3600" in src
+    assert "48 * 3600" not in src
+
+
+def test_iter_expired_meta_honours_168h_cap(store):
+    cache = "age168h01"
+    meta = store.meta_path(cache)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    now = 1_800_000_000.0
+    meta.write_text(
+        '{"cache_key":"%s","created_at":%s}' % (cache, now - 167 * 3600),
+        encoding="utf-8",
+    )
+    keep = store.iter_expired_meta(max_age_s=168 * 3600, now=now)
+    assert cache not in keep
+    meta.write_text(
+        '{"cache_key":"%s","created_at":%s}' % (cache, now - 168 * 3600 - 1),
+        encoding="utf-8",
+    )
+    gone = store.iter_expired_meta(max_age_s=168 * 3600, now=now)
+    assert cache in gone
 
 
 def test_stale_tmp_is_visible_to_reaper(store):

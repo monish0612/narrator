@@ -11,7 +11,16 @@ class Settings(BaseSettings):
 
     redis_url: str = Field(..., min_length=8, validation_alias=AliasChoices("REDIS_URL", "NARRATION_REDIS_URL"))
     redis_key_prefix: str = "narration:"
-    redis_ttl_seconds: int = 259200
+    # Must outlive the on-disk reaper (168h) so article→cache bindings
+    # still resolve for replay / phone download until the opus is deleted.
+    redis_ttl_seconds: int = 691200
+    reaper_age_hours: int = Field(
+        default=168,
+        validation_alias=AliasChoices(
+            "NARRATION_REAPER_AGE_HOURS",
+            "REAPER_AGE_HOURS",
+        ),
+    )
 
     narration_api_key: str = ""
     data_dir: str = "/data"
@@ -50,6 +59,13 @@ class Settings(BaseSettings):
         # Dedicated DB index is a hard requirement — DB 0 is LiteLLM.
         if v.rstrip("/").endswith("/0"):
             raise ValueError("REDIS_URL must not use DB 0 (reserved for LiteLLM)")
+        return v
+
+    @field_validator("reaper_age_hours")
+    @classmethod
+    def _reaper_hours(cls, v: int) -> int:
+        if not 1 <= v <= 720:
+            raise ValueError("NARRATION_REAPER_AGE_HOURS must be between 1 and 720")
         return v
 
     @field_validator("tts_speed")

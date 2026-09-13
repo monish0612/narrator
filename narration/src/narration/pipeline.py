@@ -339,7 +339,7 @@ async def mark_listened(
     article_id: str | None,
     cache: str | None,
 ) -> dict[str, Any]:
-    """Listen finished: keep opus for replay. Files go away on /v1/drop or the 48h reaper."""
+    """Listen finished: keep opus for replay. Files go away on /v1/drop or the 168h reaper."""
     rec: dict[str, Any] = {}
     if article_id:
         rec = await store.get_article(article_id) or {}

@@ -19,7 +19,7 @@ from narration.tts_client import TtsClient
 
 log = get_logger("narration.worker")
 
-REAPER_AGE_S = 48 * 3600
+REAPER_AGE_S = 168 * 3600
 
 
 async def generate_narration(ctx, payload: dict) -> dict:
@@ -61,7 +61,15 @@ async def reaper(ctx) -> dict:
     store: Store = ctx["store"]
     tg: Telegram = ctx["tg"]
     now = time.time()
-    keys = store.iter_expired_meta(max_age_s=REAPER_AGE_S, now=now)
+    settings = ctx.get("settings")
+    age_s = REAPER_AGE_S
+    hours = getattr(settings, "reaper_age_hours", None)
+    if hours is not None:
+        try:
+            age_s = max(3600, int(hours) * 3600)
+        except (TypeError, ValueError):
+            age_s = REAPER_AGE_S
+    keys = store.iter_expired_meta(max_age_s=age_s, now=now)
     deleted = 0
     failed = 0
     scanned = len(keys)

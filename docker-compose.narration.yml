@@ -68,7 +68,8 @@ services:
     environment:
       REDIS_URL: ${REDIS_URL}
       REDIS_KEY_PREFIX: narration:
-      REDIS_TTL_SECONDS: "259200"
+      REDIS_TTL_SECONDS: "691200"
+      NARRATION_REAPER_AGE_HOURS: "168"
       NARRATION_API_KEY: ${NARRATION_API_KEY}
       DATA_DIR: /data
       TTS_BASE_URL: http://narration-tts:8880/v1
