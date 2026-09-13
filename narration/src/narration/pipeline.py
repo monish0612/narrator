@@ -21,6 +21,7 @@ from narration.logging import get_logger
 from narration.normalize import build_cache_key
 from narration.prompts import word_count
 from narration.ram_gate import mem_available_bytes, next_backoff_s, should_defer
+from narration.spoken_host import HOST_TOUCH_VERSION, finish_spoken_script, should_personal_open
 from narration.store import (
     STATUS_DELETED,
     STATUS_FALLBACK,
@@ -171,6 +172,12 @@ class Pipeline:
                 article_text=text,
                 word_min=self.word_min,
                 word_max=self.word_max,
+                article_id=article_id,
+            )
+            script = finish_spoken_script(
+                script,
+                personal_open=should_personal_open(article_id),
+                article_id=article_id,
             )
             await self._abort_if_dropped(article_id, cache)
             self.store.write_script(cache, script)
@@ -215,6 +222,7 @@ class Pipeline:
                 "voice": self.voice,
                 "speed": speed,
                 "article_id": article_id,
+                "host_touch": HOST_TOUCH_VERSION,
             }
             await self.store.put_cache(cache, record)
             await self._abort_if_dropped(article_id, cache)

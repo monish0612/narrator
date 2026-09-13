@@ -20,6 +20,7 @@ from narration.llm import LlmClient
 from narration.logging import configure_logging, get_logger
 from narration.normalize import build_cache_key
 from narration.pipeline import drop_article_audio, mark_listened
+from narration.spoken_host import ensure_host_touch
 from narration.store import STATUS_DELETED, STATUS_FALLBACK, STATUS_QUEUED, STATUS_READY, Store
 from narration.telegram import Telegram
 from narration.tts_client import TtsClient
@@ -184,6 +185,15 @@ def create_app() -> FastAPI:
                 rec["status"] = STATUS_FALLBACK
                 rec["reason"] = "audio_missing"
                 await app.state.store.bind_article(article_id, rec)
+            else:
+                rec = await ensure_host_touch(
+                    app.state.store,
+                    app.state.tts,
+                    {**live, **rec, "article_id": article_id, "cache_key": cache},
+                    voice=app.state.settings.tts_voice,
+                    speed=app.state.settings.tts_speed,
+                    bitrate=app.state.settings.audio_bitrate,
+                )
         return rec
 
     @app.get("/v1/audio/{cache_key}.opus")
@@ -197,6 +207,14 @@ def create_app() -> FastAPI:
         rec = await store.get_cache(cache_key)
         if not rec:
             raise HTTPException(status_code=404, detail="not_found")
+        rec = await ensure_host_touch(
+            store,
+            app.state.tts,
+            rec,
+            voice=app.state.settings.tts_voice,
+            speed=app.state.settings.tts_speed,
+            bitrate=app.state.settings.audio_bitrate,
+        )
         path = store.opus_path(cache_key, hd=hd and bool(rec.get("hd_file_path")))
         if not path.exists():
             path = store.opus_path(cache_key)

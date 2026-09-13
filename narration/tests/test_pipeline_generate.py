@@ -107,6 +107,11 @@ async def test_generate_ready_when_record_includes_article_id(store, redis, ram_
     assert art["article_id"] == "news-bind-1"
     assert art["cache_key"] == out["cache_key"]
     assert llm.calls == 1
+    script = store.script_path(out["cache_key"]).read_text(encoding="utf-8")
+    from narration.spoken_host import script_has_closer
+
+    assert script_has_closer(script)
+    assert art["host_touch"] == "v1"
 
 
 async def test_cache_hit_survives_status_and_article_id_in_existing(
@@ -361,6 +366,7 @@ def test_jobs_post_skips_deleted_before_cache_hit_and_exposes_drop():
     assert "complete_listen" not in src[complete_at:]
     assert "force" in src
     assert "article_removed" in src
+    assert "ensure_host_touch" in src
 
 
 async def test_generate_crash_after_drop_does_not_leave_tmp(
@@ -398,6 +404,7 @@ def test_worker_skips_dropped_before_generate_and_sweeps_tmp():
     assert 0 < dropped_at < generate_at
     assert "iter_stale_tmp" in src
     assert "article_dropped" in src
+    assert "max_jobs = 1" in src
 
 
 def test_stale_tmp_is_visible_to_reaper(store):
@@ -408,3 +415,102 @@ def test_stale_tmp_is_visible_to_reaper(store):
     assert p in stale
     fresh = store.iter_stale_tmp(max_age_s=3 * 3600, now=p.stat().st_mtime + 10)
     assert p not in fresh
+
+
+class _FakeTts:
+    def __init__(self, fail: bool = False) -> None:
+        self.calls = 0
+        self.fail = fail
+
+    async def synthesize(self, text, *, voice, speed):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("tts down")
+        return b"RIFF" + b"\x00" * 40
+
+
+async def test_ensure_host_touch_stamps_when_script_already_has_closer(store):
+    from narration.spoken_host import HOST_TOUCH_VERSION, ensure_host_touch
+
+    cache = "touchready01"
+    opus = store.opus_path(cache)
+    opus.parent.mkdir(parents=True, exist_ok=True)
+    opus.write_bytes(b"OggS" + b"\x00" * 80)
+    store.write_script(cache, "Body text. That's it from this article. I'll leave it there.")
+    rec = {
+        "cache_key": cache,
+        "article_id": "news-touch-1",
+        "status": STATUS_READY,
+        "file_path": str(opus),
+    }
+    await store.put_cache(cache, rec)
+    tts = _FakeTts()
+    out = await ensure_host_touch(
+        store, tts, rec, voice="am_onyx", speed=0.9, bitrate=32000
+    )
+    assert out["host_touch"] == HOST_TOUCH_VERSION
+    assert tts.calls == 0
+
+
+async def test_ensure_host_touch_tts_failure_leaves_opus(store):
+    from narration.spoken_host import ensure_host_touch
+
+    cache = "touchfail01"
+    opus = store.opus_path(cache)
+    opus.parent.mkdir(parents=True, exist_ok=True)
+    original = b"OggS" + b"\x00" * 80
+    opus.write_bytes(original)
+    store.write_script(cache, "The bank cut rates this morning.")
+    rec = {
+        "cache_key": cache,
+        "article_id": "news-touch-fail",
+        "status": STATUS_READY,
+        "file_path": str(opus),
+    }
+    await store.put_cache(cache, rec)
+    out = await ensure_host_touch(
+        store, _FakeTts(fail=True), rec, voice="am_onyx", speed=0.9, bitrate=32000
+    )
+    assert opus.read_bytes() == original
+    assert out.get("host_touch") != "v1"
+
+
+async def test_ensure_host_touch_appends_closer_when_missing(store, monkeypatch):
+    from narration.spoken_host import HOST_TOUCH_VERSION, ensure_host_touch, script_has_closer
+
+    async def fake_decode(src, dest):
+        dest.write_bytes(b"RIFF" + b"\x00" * 24)
+
+    async def fake_concat(paths, dest):
+        dest.write_bytes(b"RIFF" + b"\x00" * 40)
+
+    async def fake_encode(wav, dest, *, bitrate, sample_rate=24000):
+        dest.write_bytes(b"OggS" + b"TOUCH")
+
+    async def fake_dur(_path):
+        return 12.0
+
+    monkeypatch.setattr("narration.spoken_host.decode_to_wav", fake_decode)
+    monkeypatch.setattr("narration.spoken_host.concat_wavs", fake_concat)
+    monkeypatch.setattr("narration.spoken_host.encode_opus", fake_encode)
+    monkeypatch.setattr("narration.spoken_host.ffprobe_duration_s", fake_dur)
+
+    cache = "touchappend01"
+    opus = store.opus_path(cache)
+    opus.parent.mkdir(parents=True, exist_ok=True)
+    opus.write_bytes(b"OggS" + b"\x00" * 80)
+    store.write_script(cache, "The bank cut rates this morning.")
+    rec = {
+        "cache_key": cache,
+        "article_id": "news-touch-append",
+        "status": STATUS_READY,
+        "file_path": str(opus),
+    }
+    await store.put_cache(cache, rec)
+    out = await ensure_host_touch(
+        store, _FakeTts(), rec, voice="am_onyx", speed=0.9, bitrate=32000
+    )
+    assert out["host_touch"] == HOST_TOUCH_VERSION
+    assert opus.read_bytes().endswith(b"TOUCH")
+    script = store.script_path(cache).read_text(encoding="utf-8")
+    assert script_has_closer(script)

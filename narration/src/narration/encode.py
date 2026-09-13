@@ -70,6 +70,27 @@ async def concat_wavs(paths: list[Path], dest: Path) -> None:
         raise EncodeError(f"concat failed: {err[-400:]}")
 
 
+async def decode_to_wav(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    code, err = await _run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(src),
+            "-ac",
+            "1",
+            "-ar",
+            "24000",
+            "-c:a",
+            "pcm_s16le",
+            str(dest),
+        ]
+    )
+    if code != 0:
+        raise EncodeError(f"decode failed: {err[-400:]}")
+
+
 async def encode_opus(wav: Path, dest: Path, *, bitrate: int, sample_rate: int = 24000) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     code, err = await _run(

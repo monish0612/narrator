@@ -14,13 +14,17 @@ _PLAIN_RULES = (
     "- Plain spoken English ONLY. No markdown, bullets, headings, citations, or URLs.\n"
     "- Verbalize numbers and symbols ('twenty-five percent', not '25%').\n"
     "- Do not invent facts, names, or numbers that are not in the article.\n"
-    "- Structure: a one-sentence hook, then the body, then a short recap.\n"
+    "- Structure: a one-sentence hook, then the body, then a short recap, "
+    "then a closer that makes it obvious you are finished.\n"
     "- Write 8 to 12 short paragraphs. Each paragraph is 2 to 4 sentences.\n"
     "- Aim for spoken length of about nine minutes at a calm pace "
     "(roughly thirteen hundred to fourteen hundred and fifty words). "
     "Prefer slightly short over rambling.\n"
     "- Write the listener-facing script directly. No hidden reasoning, "
-    "planning notes, or think tags."
+    "planning notes, or think tags.\n"
+    "- Always end with one or two short spoken sentences so the listener "
+    "knows the article ended, not that playback got stuck. No new facts "
+    "in that closer. Tone: 'That's it from this article. I'll leave it there.'"
 )
 
 PLAIN_EXPLAINER = (
@@ -65,7 +69,8 @@ AI_EXPLAINER_WITH_PARALLEL = (
 COMPRESS_SYSTEM = (
     "Rewrite the spoken script so it is shorter, keeping every load-bearing fact. "
     "Plain spoken English only. No markdown. Target about {n} words. "
-    "Keep the hook-body-recap shape."
+    "Keep the hook-body-recap shape. If the script greets Monish at the start, "
+    "keep that greeting. Always keep a short closer so the ending still sounds finished."
 )
 
 
@@ -73,9 +78,12 @@ def word_count(text: str) -> int:
     return len([w for w in (text or "").split() if w])
 
 
-def build_plain_user(title: str, source: str, article_text: str) -> str:
+def build_plain_user(title: str, source: str, article_text: str, *, personal_open: bool = False) -> str:
+    from narration.spoken_host import personal_open_instruction
+
     return (
         f"Title: {title}\nSource: {source}\n\n--- ARTICLE ---\n{article_text}\n--- END ---\n\n"
+        f"{personal_open_instruction(personal_open)}\n\n"
         "Write the spoken explainer now."
     )
 
@@ -85,11 +93,21 @@ def build_relevance_user(title: str, article_text: str) -> str:
     return f"Title: {title}\n\n--- ARTICLE ---\n{excerpt}\n--- END ---\n\nJSON:"
 
 
-def build_ai_user(title: str, source: str, article_text: str, parallel: str) -> str:
+def build_ai_user(
+    title: str,
+    source: str,
+    article_text: str,
+    parallel: str,
+    *,
+    personal_open: bool = False,
+) -> str:
+    from narration.spoken_host import personal_open_instruction
+
     return (
         f"Title: {title}\nSource: {source}\n"
         f"Confirmed parallel to RPA/UiPath: {parallel}\n\n"
         f"--- ARTICLE ---\n{article_text}\n--- END ---\n\n"
+        f"{personal_open_instruction(personal_open)}\n\n"
         "Write the spoken explainer now."
     )
 

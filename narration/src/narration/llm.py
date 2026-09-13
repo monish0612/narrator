@@ -22,6 +22,7 @@ from narration.prompts import (
     is_ai_news,
     word_count,
 )
+from narration.spoken_host import should_personal_open
 
 log = get_logger("narration.llm")
 
@@ -215,20 +216,34 @@ class LlmClient:
         article_text: str,
         word_min: int,
         word_max: int,
+        article_id: str = "",
     ) -> str:
         article_text = (article_text or "")[:24000]
+        personal = should_personal_open(article_id)
         if is_ai_news(category):
             raw = await self.chat(AI_RELEVANCE_SYSTEM, build_relevance_user(title, article_text), temperature=0.1)
             relevant, parallel = _parse_relevance(raw)
             if relevant and parallel:
                 script = await self.chat(
                     AI_EXPLAINER_WITH_PARALLEL,
-                    build_ai_user(title, source, article_text, parallel),
+                    build_ai_user(
+                        title,
+                        source,
+                        article_text,
+                        parallel,
+                        personal_open=personal,
+                    ),
                 )
             else:
-                script = await self.chat(PLAIN_EXPLAINER, build_plain_user(title, source, article_text))
+                script = await self.chat(
+                    PLAIN_EXPLAINER,
+                    build_plain_user(title, source, article_text, personal_open=personal),
+                )
         else:
-            script = await self.chat(PLAIN_EXPLAINER, build_plain_user(title, source, article_text))
+            script = await self.chat(
+                PLAIN_EXPLAINER,
+                build_plain_user(title, source, article_text, personal_open=personal),
+            )
 
         script = _strip_think(_strip_fences(script))
         if word_count(script) < 40:
