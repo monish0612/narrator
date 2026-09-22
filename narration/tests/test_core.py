@@ -12,6 +12,7 @@ from narration.delete import delete_artifacts
 from narration.encode import qa_should_fail
 from narration.http_range import _RANGE
 from narration.llm import _parse_relevance, _strip_think
+from narration.enqueue_policy import classify_enqueue, plan_jobs
 from narration.normalize import build_cache_key, normalize_article_text
 from narration.prompts import is_ai_news, word_count
 from narration.ram_gate import mem_available_bytes, next_backoff_s, should_defer
@@ -225,3 +226,30 @@ async def test_set_article_survives_article_id_in_kwargs(store):
     assert art["article_id"] == "news-bind"
     assert art["cache_key"] == "abc"
     assert art["status"] == "ready"
+
+
+def test_ready_article_is_not_regenerated_for_a_different_excerpt():
+    existing = {"status": "ready", "cache_key": "full-article"}
+    assert (
+        classify_enqueue(existing=existing, requested_ready=False, force=True)
+        == "keep_ready"
+    )
+
+
+def test_in_flight_article_is_not_queued_again():
+    assert (
+        classify_enqueue(
+            existing={"status": "generating", "cache_key": "c"},
+            requested_ready=False,
+            force=True,
+        )
+        == "in_flight"
+    )
+
+
+def test_rush_job_runs_before_the_backlog_job():
+    backlog = {"article_id": "old"}
+    rush = {"article_id": "opened"}
+    assert plan_jobs(backlog, rush) == [rush, backlog]
+    assert plan_jobs(rush, rush) == [rush]
+    assert plan_jobs(backlog, None) == [backlog]

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import asyncio
+import json
 import time
 
 import redis.asyncio as redis
@@ -14,18 +16,44 @@ from pydantic import BaseModel, Field
 
 from narration.breaker import PipelineBreaker
 from narration.config import load_settings
+from narration.enqueue_policy import classify_enqueue
 from narration.http_range import range_file_response
 from narration.keys import lock_key
 from narration.llm import LlmClient
 from narration.logging import configure_logging, get_logger
 from narration.normalize import build_cache_key
 from narration.pipeline import drop_article_audio, mark_listened
-from narration.spoken_host import ensure_host_touch
+from narration.spoken_host import HOST_TOUCH_VERSION, ensure_host_touch
 from narration.store import STATUS_DELETED, STATUS_FALLBACK, STATUS_QUEUED, STATUS_READY, Store
 from narration.telegram import Telegram
 from narration.tts_client import TtsClient
 
 log = get_logger("narration.api")
+
+_touching: set[str] = set()
+
+
+def schedule_host_touch(app: FastAPI, rec: dict) -> None:
+    """Append the spoken closer without blocking status or playback."""
+    cache = str(rec.get("cache_key") or "").strip()
+    if not cache or cache in _touching or rec.get("host_touch") == HOST_TOUCH_VERSION:
+        return
+    _touching.add(cache)
+
+    async def _run() -> None:
+        try:
+            await ensure_host_touch(
+                app.state.store,
+                app.state.tts,
+                rec,
+                voice=app.state.settings.tts_voice,
+                speed=app.state.settings.tts_speed,
+                bitrate=app.state.settings.audio_bitrate,
+            )
+        finally:
+            _touching.discard(cache)
+
+    asyncio.get_running_loop().create_task(_run())
 
 
 class JobIn(BaseModel):
@@ -125,10 +153,30 @@ def create_app() -> FastAPI:
             bitrate=s.audio_bitrate,
         )
         existing_art = await store.get_article(body.article_id)
-        if existing_art and existing_art.get("status") == STATUS_DELETED:
-            removed = existing_art.get("reason") == "article_removed"
-            if removed or not body.force:
-                return {"status": STATUS_DELETED, "reason": "article_dropped"}
+        hit = await store.get_cache(cache)
+        requested_ready = bool(hit and hit.get("status") == STATUS_READY)
+        decision = classify_enqueue(
+            existing=existing_art,
+            requested_ready=requested_ready,
+            force=body.force,
+        )
+        if decision == "deleted":
+            return {"status": STATUS_DELETED, "reason": "article_dropped"}
+        if decision == "keep_ready":
+            kept = dict(existing_art or {})
+            kept["status"] = STATUS_READY
+            kept["cache_hit"] = True
+            return kept
+        if decision == "in_flight":
+            return dict(existing_art or {"status": STATUS_QUEUED, "cache_key": cache})
+        if decision == "bind_ready":
+            await store.bind_article(
+                body.article_id,
+                {**hit, "article_id": body.article_id, "cache_key": cache, "status": STATUS_READY},
+            )
+            return {"status": STATUS_READY, "cache_key": cache, "cache_hit": True}
+
+        if existing_art and existing_art.get("status") == STATUS_DELETED and body.force:
             await store.bind_article(
                 body.article_id,
                 {
@@ -138,14 +186,6 @@ def create_app() -> FastAPI:
                     "reason": "resurrect_replay",
                 },
             )
-
-        hit = await store.get_cache(cache)
-        if hit and hit.get("status") == STATUS_READY:
-            await store.bind_article(
-                body.article_id,
-                {**hit, "article_id": body.article_id, "cache_key": cache, "status": STATUS_READY},
-            )
-            return {"status": STATUS_READY, "cache_key": cache, "cache_hit": True}
 
         if await app.state.breaker.is_open():
             rec = {"article_id": body.article_id, "cache_key": cache, "status": STATUS_FALLBACK, "reason": "breaker_open"}
@@ -159,6 +199,16 @@ def create_app() -> FastAPI:
                 body.article_id,
                 {"article_id": body.article_id, "cache_key": cache, "status": STATUS_QUEUED},
             )
+            if body.force:
+                # The worker runs this article before whatever backlog job
+                # it dequeues next, so an open Listen does not wait behind
+                # days of ingest.
+                rush_key = f"{s.redis_key_prefix}rush"
+                await app.state.redis.set(
+                    rush_key,
+                    json.dumps(body.model_dump()),
+                    ex=900,
+                )
             await app.state.pool.enqueue_job(
                 "generate_narration",
                 body.model_dump(),
@@ -181,19 +231,14 @@ def create_app() -> FastAPI:
         cache = rec.get("cache_key")
         if cache and rec.get("status") == STATUS_READY:
             live = await app.state.store.get_cache(cache)
-            if not live:
+            opus = app.state.store.opus_path(str(cache))
+            if not live or not opus.exists():
                 rec["status"] = STATUS_FALLBACK
                 rec["reason"] = "audio_missing"
                 await app.state.store.bind_article(article_id, rec)
             else:
-                rec = await ensure_host_touch(
-                    app.state.store,
-                    app.state.tts,
-                    {**live, **rec, "article_id": article_id, "cache_key": cache},
-                    voice=app.state.settings.tts_voice,
-                    speed=app.state.settings.tts_speed,
-                    bitrate=app.state.settings.audio_bitrate,
-                )
+                rec = {**live, **rec, "article_id": article_id, "cache_key": cache, "status": STATUS_READY}
+                schedule_host_touch(app, rec)
         return rec
 
     @app.get("/v1/audio/{cache_key}.opus")
@@ -207,14 +252,7 @@ def create_app() -> FastAPI:
         rec = await store.get_cache(cache_key)
         if not rec:
             raise HTTPException(status_code=404, detail="not_found")
-        rec = await ensure_host_touch(
-            store,
-            app.state.tts,
-            rec,
-            voice=app.state.settings.tts_voice,
-            speed=app.state.settings.tts_speed,
-            bitrate=app.state.settings.audio_bitrate,
-        )
+        schedule_host_touch(app, rec)
         path = store.opus_path(cache_key, hd=hd and bool(rec.get("hd_file_path")))
         if not path.exists():
             path = store.opus_path(cache_key)

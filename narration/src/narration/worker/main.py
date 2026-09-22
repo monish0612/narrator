@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 
 from arq.connections import RedisSettings
@@ -9,6 +10,7 @@ from arq.cron import cron
 
 from narration.breaker import PipelineBreaker
 from narration.config import load_settings
+from narration.enqueue_policy import plan_jobs
 from narration.delete import delete_artifacts
 from narration.llm import LlmClient
 from narration.logging import configure_logging, get_logger
@@ -22,7 +24,45 @@ log = get_logger("narration.worker")
 REAPER_AGE_S = 168 * 3600
 
 
+def _decode_rush(raw) -> dict | None:
+    if not raw:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 async def generate_narration(ctx, payload: dict) -> dict:
+    settings = ctx.get("settings") or load_settings()
+    rush_key = f"{settings.redis_key_prefix}rush"
+    try:
+        rush = _decode_rush(await ctx["redis"].get(rush_key))
+    except Exception:
+        rush = None
+    planned = plan_jobs(payload, rush)
+    if rush and planned and planned[0] is not payload:
+        try:
+            await ctx["redis"].delete(rush_key)
+        except Exception:
+            pass
+        log.info("job.rush_first", article_id=planned[0].get("article_id"))
+        try:
+            await _generate_one(ctx, planned[0])
+        except Exception as exc:
+            log.warning("job.rush_failed", error=str(exc)[:200])
+    elif rush:
+        try:
+            await ctx["redis"].delete(rush_key)
+        except Exception:
+            pass
+    return await _generate_one(ctx, payload)
+
+
+async def _generate_one(ctx, payload: dict) -> dict:
     pipe: Pipeline = ctx["pipeline"]
     store: Store = ctx["store"]
     article_id = str(payload.get("article_id") or "")
