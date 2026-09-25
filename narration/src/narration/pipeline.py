@@ -354,6 +354,7 @@ class Pipeline:
             if not first_logged and 0 in ready:
                 first_logged = True
                 fields["first_audio_s"] = round(time.time() - started, 2)
+                meta = {k: v for k, v in meta.items() if k not in ("engine", "article")}
                 log.info("tts.first_audio", article=article_id, seconds=fields["first_audio_s"], engine=eng, **meta)
             await self._set_article(article_id, **fields)
 
@@ -363,10 +364,10 @@ class Pipeline:
                 await publish(index, eng, {"cached": True, "chars": len(chunk)})
                 return
             voc = voice if eng == engine else closest_voice(engine, voice, eng)
-            if fail_at == index and eng == engine:
-                raise CloudTtsError("invalid voice", status=400, retryable=False)
             async with sem:
                 try:
+                    if fail_at == index and eng == engine:
+                        raise CloudTtsError("invalid voice", status=400, retryable=False)
                     wav, meta = await cloud.synthesize(chunk, engine=eng, voice=voc)
                 except CloudTtsError:
                     if index == 0:
