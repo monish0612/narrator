@@ -221,7 +221,9 @@ class WorkerSettings:
         )
     ]
     max_jobs = 1
-    job_timeout = 300
+    # 700 words ≈ 216s of audio. At 1 CPU, compute/audio = 2.05, times 2 is 887s.
+    # Clamp to 12 minutes.
+    job_timeout = 720
     max_tries = 3
     on_startup = startup
     on_shutdown = shutdown

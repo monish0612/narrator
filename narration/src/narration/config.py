@@ -43,8 +43,8 @@ class Settings(BaseSettings):
     audio_bitrate: int = 32000
     hd_bitrate: int = 48000
     max_duration_s: int = 600
-    word_target_min: int = 1300
-    word_target_max: int = 1450
+    word_target_min: int = 500
+    word_target_max: int = 700
 
     ram_floor_bytes: int = 1_073_741_824
     ram_alert_floor_bytes: int = 524_288_000

@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from narration.breaker import PipelineBreaker
-from narration.chunker import pack_chunks
+from narration.chunker import pack_playback_chunks
 from narration.delete import delete_artifacts
 from narration.encode import (
     concat_wavs,
@@ -184,14 +184,14 @@ class Pipeline:
             wpm_words = word_count(script)
 
             speed = self.speed
-            opus, duration, metrics = await self._synth_and_encode(
+            opus, duration, metrics, ready_chunks = await self._synth_and_encode(
                 cache, script, speed, hd=hd, article_id=article_id
             )
             if duration > self.max_duration_s:
                 bump = min(1.1, round(speed * 1.08, 2))
                 log.warning("duration.over_cap", duration_s=duration, retry_speed=bump)
                 await self._abort_if_dropped(article_id, cache)
-                opus, duration, metrics = await self._synth_and_encode(
+                opus, duration, metrics, ready_chunks = await self._synth_and_encode(
                     cache, script, bump, hd=hd, article_id=article_id
                 )
                 if duration > self.max_duration_s:
@@ -218,6 +218,8 @@ class Pipeline:
                 "wpm": round(wpm, 1),
                 "article_text_path": str(self.store.script_path(cache)),
                 "status": STATUS_READY,
+                "chunks": ready_chunks,
+                "complete": True,
                 "created_at": time.time(),
                 "voice": self.voice,
                 "speed": speed,
@@ -296,19 +298,43 @@ class Pipeline:
     async def _synth_and_encode(
         self, cache: str, script: str, speed: float, *, hd: bool, article_id: str = ""
     ) -> tuple[Any, float, dict]:
-        chunks = pack_chunks(script)
+        chunks = pack_playback_chunks(script)
         if not chunks:
             raise LlmError("empty script; nothing to synthesize")
         wavs = []
-        for i, chunk in enumerate(chunks):
+        ready: list[int] = []
+        try:
+            for i, chunk in enumerate(chunks):
+                if article_id:
+                    await self._abort_if_dropped(article_id, cache)
+                wav_bytes = await self.tts.synthesize(chunk, voice=self.voice, speed=speed)
+                dest = self.store.tmp_wav(cache, i)
+                dest.write_bytes(wav_bytes)
+                opus_i = self.store.chunk_opus_path(cache, i)
+                await encode_opus(dest, opus_i, bitrate=self.bitrate)
+                wavs.append(dest)
+                ready.append(i)
+                if article_id:
+                    await self._set_article(
+                        article_id,
+                        cache_key=cache,
+                        status=STATUS_GENERATING,
+                        chunks=ready,
+                        complete=False,
+                    )
+                    await self._abort_if_dropped(article_id, cache)
+        except Exception as exc:
             if article_id:
-                await self._abort_if_dropped(article_id, cache)
-            wav_bytes = await self.tts.synthesize(chunk, voice=self.voice, speed=speed)
-            dest = self.store.tmp_wav(cache, i)
-            dest.write_bytes(wav_bytes)
-            wavs.append(dest)
-            if article_id:
-                await self._abort_if_dropped(article_id, cache)
+                await self._set_article(
+                    article_id,
+                    cache_key=cache,
+                    status=STATUS_FAILED,
+                    reason="chunk_failed",
+                    chunks=ready,
+                    complete=False,
+                    chunk_error=str(exc)[:180],
+                )
+            raise
         log.info("tts.chunks", cache_key=cache, n=len(wavs), bytes=[p.stat().st_size for p in wavs])
         concat = self.store.tmp / self.store.shard(cache) / f"{cache}.concat.wav"
         await concat_wavs(wavs, concat)
@@ -330,7 +356,7 @@ class Pipeline:
         for p in wavs:
             p.unlink(missing_ok=True)
         concat.unlink(missing_ok=True)
-        return opus, duration, metrics
+        return opus, duration, metrics, ready
 
 
 async def mark_listened(

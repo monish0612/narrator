@@ -35,6 +35,11 @@ class Store:
     def shard(self, cache: str) -> str:
         return cache[:2]
 
+    def chunk_opus_path(self, cache: str, index: int) -> Path:
+        d = self.audio / self.shard(cache)
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{cache}.{index}.opus"
+
     def opus_path(self, cache: str, *, hd: bool = False) -> Path:
         name = f"{cache}.hd.opus" if hd else f"{cache}.opus"
         return self.audio / self.shard(cache) / name

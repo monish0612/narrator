@@ -61,7 +61,7 @@ class LlmClient:
         if self._own:
             await self._http.aclose()
 
-    async def chat(self, system: str, user: str, *, temperature: float = 0.4, max_tokens: int = 2500) -> str:
+    async def chat(self, system: str, user: str, *, temperature: float = 0.4, max_tokens: int = 1024) -> str:
         if not self.gemini_api_key:
             raise LlmError("GEMINI_API_KEY is missing")
         return await self._gemini_chat(system, user, temperature=temperature, max_tokens=max_tokens)

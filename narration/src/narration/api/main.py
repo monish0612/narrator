@@ -249,6 +249,13 @@ def create_app() -> FastAPI:
                 schedule_host_touch(app, rec)
         return rec
 
+    @app.get("/v1/audio/{cache_key}/chunks/{index}.opus")
+    async def chunk_audio(cache_key: str, index: int, request: Request, _: None = Depends(require_key)):
+        path = app.state.store.chunk_opus_path(cache_key, index)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="not_ready")
+        return range_file_response(path, request)
+
     @app.get("/v1/audio/{cache_key}.opus")
     async def audio(
         cache_key: str,

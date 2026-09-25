@@ -12,6 +12,23 @@ def split_sentences(text: str) -> list[str]:
     return parts or ([text.strip()] if text.strip() else [])
 
 
+def pack_playback_chunks(text: str) -> list[str]:
+    """Chunk 0 is the first 1–2 sentences. Later chunks are 2–4 sentences."""
+    sentences = split_sentences(text)
+    if not sentences:
+        return []
+    chunks = [" ".join(sentences[:2])]
+    rest = sentences[2:]
+    i = 0
+    while i < len(rest):
+        take = 3 if len(rest) - i >= 3 else len(rest) - i
+        if take > 4:
+            take = 4
+        chunks.append(" ".join(rest[i : i + take]))
+        i += take
+    return [c for c in chunks if c.strip()]
+
+
 def pack_chunks(text: str, *, target: int = 800, hard_max: int = 1500) -> list[str]:
     sentences = split_sentences(text)
     chunks: list[str] = []
