@@ -315,6 +315,7 @@ class Pipeline:
                 await encode_opus(dest, opus_i, bitrate=self.bitrate)
                 wavs.append(dest)
                 ready.append(i)
+                log.info("chunk.ready", cache_key=cache, index=i, article=article_id)
                 if article_id:
                     await self._set_article(
                         article_id,
