@@ -263,4 +263,6 @@ def load_sa_json() -> str:
     raw = os.environ.get("GOOGLE_TTS_SA_JSON", "").strip()
     if not raw or raw.startswith("{{"):
         raise CloudTtsError("GOOGLE_TTS_SA_JSON missing")
+    if not raw.startswith("{"):
+        raw = base64.b64decode(raw).decode()
     return raw
