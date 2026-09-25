@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from narration.chunker import pack_chunks, split_sentences
+from narration.chunker import pack_chunks, pack_playback_chunks, split_sentences
 from narration.prompts import (
     AI_RELEVANCE_SYSTEM,
     COMPRESS_SYSTEM,
@@ -39,6 +39,15 @@ def test_chunker_respects_target():
     assert chunks
     assert all(len(c) <= 200 or True for c in chunks)
     assert split_sentences("Hello. World? Yes!") == ["Hello.", "World?", "Yes!"]
+
+
+def test_playback_chunks_lead_with_two_sentences_then_groups():
+    text = " ".join(f"Sentence {i} is here." for i in range(12))
+    chunks = pack_playback_chunks(text)
+    assert len(split_sentences(chunks[0])) == 2
+    for later in chunks[1:]:
+        n = len(split_sentences(later))
+        assert 2 <= n <= 4
 
 
 def test_personal_open_is_stable_and_sparse():

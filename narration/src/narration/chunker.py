@@ -21,9 +21,13 @@ def pack_playback_chunks(text: str) -> list[str]:
     rest = sentences[2:]
     i = 0
     while i < len(rest):
-        take = 3 if len(rest) - i >= 3 else len(rest) - i
-        if take > 4:
-            take = 4
+        left = len(rest) - i
+        if left <= 4:
+            take = left
+        elif left == 5:
+            take = 2
+        else:
+            take = 3
         chunks.append(" ".join(rest[i : i + take]))
         i += take
     return [c for c in chunks if c.strip()]

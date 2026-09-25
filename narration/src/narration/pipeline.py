@@ -24,6 +24,7 @@ from narration.ram_gate import mem_available_bytes, next_backoff_s, should_defer
 from narration.spoken_host import HOST_TOUCH_VERSION, finish_spoken_script, should_personal_open
 from narration.store import (
     STATUS_DELETED,
+    STATUS_FAILED,
     STATUS_FALLBACK,
     STATUS_GENERATING,
     STATUS_QUEUED,
@@ -297,7 +298,7 @@ class Pipeline:
 
     async def _synth_and_encode(
         self, cache: str, script: str, speed: float, *, hd: bool, article_id: str = ""
-    ) -> tuple[Any, float, dict]:
+    ) -> tuple[Any, float, dict, list[int]]:
         chunks = pack_playback_chunks(script)
         if not chunks:
             raise LlmError("empty script; nothing to synthesize")

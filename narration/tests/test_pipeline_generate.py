@@ -81,6 +81,7 @@ def _stub_synth(monkeypatch, store, *, metrics=None, duration=12.5):
                 "rms_db": -16.0,
                 "rms_parsed": True,
             },
+            [0],
         )
 
     monkeypatch.setattr(Pipeline, "_synth_and_encode", fake_synth)
@@ -300,6 +301,7 @@ async def test_generate_deletes_files_if_dropped_during_synth(
             opus,
             12.5,
             {"clipped": False, "silence_s": 0.2, "rms_db": -16.0, "rms_parsed": True},
+            [0],
         )
 
     monkeypatch.setattr(Pipeline, "_synth_and_encode", fake_synth)
