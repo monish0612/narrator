@@ -190,6 +190,8 @@ class LlmClient:
             return False
 
     async def ensure_model(self) -> str:
+        if self.gemini_api_key:
+            return self.model
         if await self.model_ready():
             return self.model
         names: list[str] = []
