@@ -6,34 +6,6 @@
 # (on the coolify network) can only resolve these DNS names via aliases.
 
 services:
-  narration-tts:
-    build:
-      context: .
-      dockerfile: services/tts/Dockerfile
-    hostname: narration-tts
-    environment:
-      ONNX_INTRA_OP: "1"
-    volumes:
-      - narration-tts-models:/models
-    mem_limit: 1200m
-    cpus: "1.0"
-    cpu_shares: 512
-    expose:
-      - "8880"
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8880/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 8
-      start_period: 600s
-    restart: unless-stopped
-    labels:
-      - traefik.enable=false
-    networks:
-      coolify:
-        aliases:
-          - narration-tts
-
   narration-orchestrator:
     build:
       context: .
@@ -64,11 +36,10 @@ services:
     volumes:
       - narration-data:/data
     mem_limit: 768m
+    cpus: "1.0"
     cpu_shares: 256
     expose:
       - "8870"
-    depends_on:
-      - narration-tts
     restart: unless-stopped
     labels:
       - traefik.enable=false
@@ -82,5 +53,4 @@ networks:
     external: true
 
 volumes:
-  narration-tts-models: {}
   narration-data: {}
