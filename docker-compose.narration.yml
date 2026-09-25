@@ -6,43 +6,17 @@
 # (on the coolify network) can only resolve these DNS names via aliases.
 
 services:
-  narration-llm:
-    build:
-      context: .
-      dockerfile: narration/llm/Dockerfile
-    hostname: narration-llm
-    environment:
-      OLLAMA_HOST: 0.0.0.0
-      OLLAMA_KEEP_ALIVE: 5m
-      LLM_MODEL: qwen3.5-4b
-      GGUF_PATH: /models/Qwen3.5-4B-Q4_K_M.gguf
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
-    volumes:
-      - narration-ollama:/root/.ollama
-      - narration-gguf:/models
-    mem_limit: 4500m
-    cpu_shares: 256
-    expose:
-      - "11434"
-    restart: unless-stopped
-    labels:
-      - traefik.enable=false
-    networks:
-      coolify:
-        aliases:
-          - narration-llm
-
   narration-tts:
     build:
       context: .
       dockerfile: services/tts/Dockerfile
     hostname: narration-tts
     environment:
-      ONNX_INTRA_OP: "2"
+      ONNX_INTRA_OP: "1"
     volumes:
       - narration-tts-models:/models
     mem_limit: 1200m
+    cpus: "1.0"
     cpu_shares: 512
     expose:
       - "8880"
@@ -75,8 +49,10 @@ services:
       TTS_BASE_URL: http://narration-tts:8880/v1
       TTS_VOICE: am_onyx
       TTS_SPEED: "0.9"
-      LLM_BASE_URL: http://narration-llm:11434
-      LLM_MODEL: qwen3.5-4b
+      LLM_MODEL: ${NARRATION_MODEL:-gemini-2.5-flash-lite}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?}
+      GEMINI_FALLBACK_MODELS: ${GEMINI_FALLBACK_MODELS:-}
+      NARRATION_DAILY_LLM_CAP: ${NARRATION_DAILY_LLM_CAP:-150}
       MODEL_VERSION: qwen3.5-4b-q4km+kokoro-int8-v1.0
       AUDIO_FORMAT: opus
       AUDIO_BITRATE: "32000"
@@ -91,7 +67,6 @@ services:
       - "8870"
     depends_on:
       - narration-tts
-      - narration-llm
     restart: unless-stopped
     labels:
       - traefik.enable=false
@@ -105,7 +80,5 @@ networks:
     external: true
 
 volumes:
-  narration-ollama: {}
-  narration-gguf: {}
   narration-tts-models: {}
   narration-data: {}

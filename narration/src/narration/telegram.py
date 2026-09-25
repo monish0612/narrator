@@ -17,12 +17,22 @@ class Telegram:
         self._token = token
         self._chat = chat_id
         self._client: httpx.AsyncClient | None = None
+        self._redis = None
 
     @property
     def enabled(self) -> bool:
         return bool(self._token and self._chat)
 
-    async def send(self, text: str) -> None:
+    async def send(self, text: str, *, redis=None, failure: bool = False) -> None:
+        store = redis if redis is not None else self._redis
+        if failure and store is not None:
+            try:
+                got = await store.set("narration:alert:fail", "1", nx=True, ex=3600)
+            except Exception:
+                got = True
+            if not got:
+                log.info("telegram.suppressed", reason="hourly_cap")
+                return
         if not self.enabled:
             log.info("telegram.skipped", reason="unconfigured", preview=text[:180])
             return

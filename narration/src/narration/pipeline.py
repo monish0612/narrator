@@ -261,7 +261,7 @@ class Pipeline:
             tripped = await self.breaker.record_failure(article_id)
             if tripped:
                 await self.tg.send(format_alert("breaker open — on-device fallback", breaker=self.breaker.name))
-            await self.tg.send(format_alert("synthesis failed", article=article_id, error=err[:180]))
+            await self.tg.send(format_alert("synthesis failed", article=article_id, error=err[:180]), failure=True)
             await self._set_article(
                 article_id,
                 cache_key=cache,

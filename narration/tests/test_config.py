@@ -6,19 +6,33 @@ from pydantic import ValidationError
 from narration.config import Settings
 
 
+def _gemini(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key-not-real")
+
+
+def test_rejects_missing_gemini_key(monkeypatch):
+    monkeypatch.setenv("REDIS_URL", "redis://default:x@redis:6379/1")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with pytest.raises(ValidationError):
+        Settings()
+
+
 def test_rejects_redis_db0(monkeypatch):
+    _gemini(monkeypatch)
     monkeypatch.setenv("REDIS_URL", "redis://default:x@redis:6379/0")
     with pytest.raises(ValidationError):
         Settings()
 
 
 def test_accepts_redis_db1(monkeypatch):
+    _gemini(monkeypatch)
     monkeypatch.setenv("REDIS_URL", "redis://default:x@redis:6379/1")
     s = Settings()
     assert s.redis_url.endswith("/1")
 
 
 def test_accepts_narration_redis_url_alias(monkeypatch):
+    _gemini(monkeypatch)
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.setenv("NARRATION_REDIS_URL", "redis://default:x@redis:6379/1")
     s = Settings()
@@ -26,6 +40,7 @@ def test_accepts_narration_redis_url_alias(monkeypatch):
 
 
 def test_default_reaper_and_ttl_cover_168_hours(monkeypatch):
+    _gemini(monkeypatch)
     monkeypatch.setenv("REDIS_URL", "redis://default:x@redis:6379/1")
     monkeypatch.delenv("REDIS_TTL_SECONDS", raising=False)
     monkeypatch.delenv("NARRATION_REAPER_AGE_HOURS", raising=False)
@@ -37,6 +52,7 @@ def test_default_reaper_and_ttl_cover_168_hours(monkeypatch):
 
 
 def test_reaper_hours_rejects_out_of_range(monkeypatch):
+    _gemini(monkeypatch)
     monkeypatch.setenv("REDIS_URL", "redis://default:x@redis:6379/1")
     monkeypatch.setenv("NARRATION_REAPER_AGE_HOURS", "0")
     with pytest.raises(ValidationError):

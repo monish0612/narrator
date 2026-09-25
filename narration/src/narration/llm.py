@@ -41,11 +41,15 @@ class LlmClient:
         model: str,
         *,
         gguf_path: str,
-        timeout: float = 1500,
+        timeout: float = 45,
+        gemini_api_key: str = "",
+        fallback_models: list[str] | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.base = base_url.rstrip("/")
         self.model = model
+        self.gemini_api_key = gemini_api_key.strip()
+        self.fallback_models = list(fallback_models or [])
         self.gguf_path = gguf_path
         self.num_ctx = 8192
         self._own = client is None
@@ -57,18 +61,69 @@ class LlmClient:
         if self._own:
             await self._http.aclose()
 
-    async def chat(self, system: str, user: str, *, temperature: float = 0.4, max_tokens: int = 4096) -> str:
+    async def chat(self, system: str, user: str, *, temperature: float = 0.4, max_tokens: int = 2500) -> str:
+        if not self.gemini_api_key:
+            raise LlmError("GEMINI_API_KEY is missing")
+        return await self._gemini_chat(system, user, temperature=temperature, max_tokens=max_tokens)
+
+    def _thinking(self, model: str) -> dict:
+        if model.startswith("gemini-2.5"):
+            return {"thinkingBudget": 0}
+        return {"thinkingLevel": "minimal"}
+
+    async def _gemini_chat(self, system: str, user: str, *, temperature: float, max_tokens: int) -> str:
+        models = [self.model, *[m for m in self.fallback_models if m != self.model]]
         last: Exception | None = None
-        for attempt in range(3):
-            try:
-                return await self._chat_once(
-                    system, user, temperature=temperature, max_tokens=max_tokens
-                )
-            except _RETRYABLE as exc:
-                last = exc
-                log.warning("llm.chat_retry", attempt=attempt + 1, error=str(exc)[:200])
-                await asyncio.sleep(1.5 * (attempt + 1))
-        raise LlmError(f"llm disconnected: {last}") from last
+        for model in models:
+            for attempt in range(3):
+                try:
+                    return await self._gemini_once(
+                        model, system, user, temperature=temperature, max_tokens=max_tokens
+                    )
+                except _RETRYABLE as exc:
+                    last = exc
+                    log.warning("llm.gemini_retry", model=model, attempt=attempt + 1, error=str(exc)[:200])
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                except LlmError as exc:
+                    msg = str(exc)
+                    if msg.startswith("llm http 429") or msg.startswith("llm http 5"):
+                        last = exc
+                        log.warning("llm.gemini_retry", model=model, attempt=attempt + 1, error=str(exc)[:200])
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+                    raise
+            log.warning("llm.gemini_fallback", model=model)
+        raise LlmError(f"gemini failed: {last}")
+
+    async def _gemini_once(self, model: str, system: str, user: str, *, temperature: float, max_tokens: int) -> str:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        body = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_tokens,
+                "thinkingConfig": self._thinking(model),
+            },
+        }
+        resp = await self._http.post(url, headers={"x-goog-api-key": self.gemini_api_key}, json=body)
+        if resp.status_code == 429 or resp.status_code >= 500:
+            raise LlmError(f"llm http {resp.status_code}")
+        if resp.status_code >= 400:
+            raise LlmError(f"llm http {resp.status_code}: {resp.text[:200]}")
+        data = resp.json()
+        usage = data.get("usageMetadata") or {}
+        log.info(
+            "llm.tokens",
+            model=model,
+            input_tokens=usage.get("promptTokenCount"),
+            output_tokens=usage.get("candidatesTokenCount"),
+        )
+        parts = ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+        text = "".join(p.get("text") or "" for p in parts if not p.get("thought"))
+        if not text.strip():
+            raise LlmError("gemini empty")
+        return text
 
     async def _chat_once(
         self, system: str, user: str, *, temperature: float, max_tokens: int

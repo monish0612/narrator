@@ -15,7 +15,7 @@ from narration.delete import delete_artifacts
 from narration.llm import LlmClient
 from narration.logging import configure_logging, get_logger
 from narration.pipeline import Pipeline, RamDeferred
-from narration.store import STATUS_DELETED, Store
+from narration.store import STATUS_DELETED, STATUS_FALLBACK, Store
 from narration.telegram import Telegram, format_alert
 from narration.tts_client import TtsClient
 
@@ -75,6 +75,21 @@ async def _generate_one(ctx, payload: dict) -> dict:
             if cache:
                 await delete_artifacts(store, str(cache))
         return {"status": STATUS_DELETED, "reason": "article_dropped"}
+    chosen = str(payload.get("model") or "").strip()
+    if chosen.startswith("gemini"):
+        ctx["llm"].model = chosen
+    cap = int(getattr(ctx.get("settings") or load_settings(), "narration_daily_llm_cap", 0) or 0)
+    if cap > 0 and ctx["llm"].gemini_api_key:
+        day = time.strftime("%Y%m%d", time.gmtime())
+        key = f"{(ctx.get('settings') or load_settings()).redis_key_prefix}llm_cap:{day}"
+        try:
+            used = int(await ctx["redis"].incr(key))
+            await ctx["redis"].expire(key, 172800)
+        except Exception:
+            used = 0
+        if used > cap:
+            log.warning("job.daily_cap", used=used, cap=cap, article_id=article_id)
+            return {"status": STATUS_FALLBACK, "reason": "daily_llm_cap"}
     try:
         return await pipe.generate(payload)
     except RamDeferred as exc:
@@ -143,7 +158,15 @@ async def startup(ctx) -> None:
         ttl_s=settings.redis_ttl_seconds,
     )
     tg = Telegram(settings.telegram_bot_token, settings.telegram_chat_id)
-    llm = LlmClient(settings.llm_base_url, settings.llm_model, gguf_path=settings.gguf_path)
+    tg._redis = ctx["redis"]
+    llm = LlmClient(
+        settings.llm_base_url,
+        settings.llm_model,
+        gguf_path=settings.gguf_path,
+        gemini_api_key=settings.gemini_api_key,
+        fallback_models=[m.strip() for m in settings.gemini_fallback_models.split(",") if m.strip()],
+        timeout=45,
+    )
     tts = TtsClient(settings.tts_base_url)
     breaker = PipelineBreaker(
         ctx["redis"],
@@ -198,7 +221,7 @@ class WorkerSettings:
         )
     ]
     max_jobs = 1
-    job_timeout = 2700
+    job_timeout = 300
     max_tries = 3
     on_startup = startup
     on_shutdown = shutdown

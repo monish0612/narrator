@@ -32,7 +32,10 @@ class Settings(BaseSettings):
     tts_blend: str = "am_onyx(2)+am_michael(1)"
 
     llm_base_url: str = "http://narration-llm:11434"
-    llm_model: str = "qwen3.5-4b"
+    llm_model: str = "gemini-2.5-flash-lite"
+    gemini_api_key: str
+    gemini_fallback_models: str = ""
+    narration_daily_llm_cap: int = 150
     llm_num_ctx: int = 8192
     model_version: str = "qwen3.5-4b-q4km+kokoro-int8-v1.0"
 
@@ -52,6 +55,14 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     gguf_path: str = "/models/Qwen3.5-4B-Q4_K_M.gguf"
+
+    @field_validator("gemini_api_key")
+    @classmethod
+    def _gemini_required(cls, v: str) -> str:
+        text = str(v or "").strip()
+        if not text or text.startswith("${") or text.startswith("{{"):
+            raise ValueError("GEMINI_API_KEY is missing. Set the Coolify team variable and redeploy.")
+        return text
 
     @field_validator("redis_url")
     @classmethod

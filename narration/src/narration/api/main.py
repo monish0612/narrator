@@ -64,6 +64,7 @@ class JobIn(BaseModel):
     text: str = Field(..., min_length=1)
     hd: bool = False
     voice: str | None = None
+    model: str | None = None
     force: bool = False
 
 
@@ -107,7 +108,14 @@ async def lifespan(app: FastAPI):
     )
     app.state.pool = await create_pool(RedisSettings.from_dsn(settings.redis_url))
     app.state.tts = TtsClient(settings.tts_base_url)
-    app.state.llm = LlmClient(settings.llm_base_url, settings.llm_model, gguf_path=settings.gguf_path)
+    app.state.llm = LlmClient(
+        settings.llm_base_url,
+        settings.llm_model,
+        gguf_path=settings.gguf_path,
+        gemini_api_key=settings.gemini_api_key,
+        fallback_models=[m.strip() for m in settings.gemini_fallback_models.split(",") if m.strip()],
+        timeout=45,
+    )
     yield
     await app.state.tts.aclose()
     await app.state.llm.aclose()
