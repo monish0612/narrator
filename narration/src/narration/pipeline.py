@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 import time
 from typing import Any
 
@@ -33,6 +35,16 @@ from narration.store import (
 )
 from narration.telegram import Telegram, format_alert
 from narration.tts_client import TtsClient, TtsError
+from narration.tts_cloud import (
+    FALLBACK_ENGINE,
+    SCRIPT_VERSION,
+    CloudTts,
+    CloudTtsError,
+    closest_voice,
+    load_sa_json,
+    normalize_engine,
+    normalize_voice,
+)
 
 log = get_logger("narration.pipeline")
 
@@ -126,6 +138,11 @@ class Pipeline:
         category = str(payload.get("category") or "")
         text = str(payload.get("text") or "")
         hd = bool(payload.get("hd") or self.hd)
+        self._cloud_engine = ""
+        if os.environ.get("GOOGLE_TTS_SA_JSON"):
+            self._cloud_engine = normalize_engine(payload.get("tts_model"))
+            self.voice = normalize_voice(self._cloud_engine, payload.get("voice"))
+            self.model_version = f"{SCRIPT_VERSION}+{self._cloud_engine}"
         cache = self.cache_for(text)
 
         prev = await self.store.get_article(article_id)
@@ -161,9 +178,13 @@ class Pipeline:
             await self._set_article(article_id, cache_key=cache, status=STATUS_QUEUED)
             return {"status": STATUS_QUEUED, "cache_key": cache, "reason": "lock_held"}
 
-        await self._set_article(article_id, cache_key=cache, status=STATUS_GENERATING)
+        await self._set_article(article_id, cache_key=cache, status=STATUS_GENERATING, engine=self._cloud_engine, voice=self.voice)
         await self._abort_if_dropped(article_id, cache)
         try:
+            if self._cloud_engine:
+                return await self._cloud_narrate(
+                    article_id, cache, title, source, category, text, payload
+                )
             await self.llm.ensure_model()
             await self._abort_if_dropped(article_id, cache)
             script = await self.llm.generate_script(
@@ -277,6 +298,159 @@ class Pipeline:
             if live and live.get("status") == STATUS_DELETED:
                 await delete_artifacts(self.store, cache)
             await self.store._r.delete(lock)
+
+    async def _cloud_narrate(self, article_id, cache, title, source, category, text, payload) -> dict[str, Any]:
+        from narration.chunker import split_sentences
+
+        cloud = CloudTts(
+            self.store._r,
+            self.store.prefix,
+            gemini_api_key=self.llm.gemini_api_key,
+            sa_json=load_sa_json(),
+        )
+        engine = self._cloud_engine
+        active = [engine]
+        voice = self.voice
+        fail_raw = await self.store._r.get(f"{self.store.prefix}tts_test_fail:{article_id}")
+        fail_at = int(fail_raw) if fail_raw else None
+        if fail_raw:
+            await self.store._r.delete(f"{self.store.prefix}tts_test_fail:{article_id}")
+        sem = asyncio.Semaphore(3)
+        scripts: list[str] = []
+        tasks: dict[int, asyncio.Task] = {}
+        engines: dict[int, str] = {}
+        started = time.time()
+        first_logged = False
+        buf = ""
+        held: list[str] = []
+
+        def pop_chunks(final: bool) -> None:
+            nonlocal held
+            while held:
+                if not scripts and len(held) < 2 and not final:
+                    return
+                if not scripts:
+                    take = min(2, len(held))
+                elif len(held) >= 3 or final:
+                    take = min(4, len(held)) if final else 3
+                else:
+                    return
+                scripts.append(" ".join(held[:take]))
+                held = held[take:]
+
+        async def publish(index: int, eng: str, meta: dict) -> None:
+            nonlocal first_logged
+            ready = sorted(i for i in range(index + 1) if self.store.chunk_opus_path(cache, i).exists())
+            if ready != list(range(len(ready))):
+                return
+            fields = {
+                "cache_key": cache,
+                "status": STATUS_GENERATING,
+                "chunks": ready,
+                "complete": False,
+                "engine": eng,
+                "voice": voice,
+            }
+            if not first_logged and 0 in ready:
+                first_logged = True
+                fields["first_audio_s"] = round(time.time() - started, 2)
+                log.info("tts.first_audio", article=article_id, seconds=fields["first_audio_s"], engine=eng, **meta)
+            await self._set_article(article_id, **fields)
+
+        async def run_one(index: int, chunk: str, eng: str) -> None:
+            opus = self.store.chunk_opus_path(cache, index)
+            if opus.exists() and not (fail_at == index and eng == engine):
+                await publish(index, eng, {"cached": True, "chars": len(chunk)})
+                return
+            voc = voice if eng == engine else closest_voice(engine, voice, eng)
+            if fail_at == index and eng == engine:
+                raise CloudTtsError("invalid voice", status=400, retryable=False)
+            async with sem:
+                try:
+                    wav, meta = await cloud.synthesize(chunk, engine=eng, voice=voc)
+                except CloudTtsError:
+                    if index == 0:
+                        active[0] = FALLBACK_ENGINE.get(eng, eng)
+                    alt = FALLBACK_ENGINE.get(eng)
+                    if not alt:
+                        raise
+                    log.warning("tts.engine_fallback", article=article_id, index=index, from_engine=eng, to=alt)
+                    voc = closest_voice(eng, voc, alt)
+                    wav, meta = await cloud.synthesize(chunk, engine=alt, voice=voc)
+                    eng = alt
+                dest = self.store.tmp_wav(cache, index)
+                dest.write_bytes(wav)
+                await encode_opus(dest, opus, bitrate=self.bitrate)
+                engines[index] = eng
+                await publish(index, eng, meta)
+
+        try:
+            async for piece in self.llm.iter_spoken_deltas(
+                title=title, source=source, category=category, article_text=text, article_id=article_id
+            ):
+                buf += piece
+                parts = split_sentences(buf)
+                if buf and not buf.rstrip().endswith((".", "!", "?")):
+                    held.extend(parts[:-1])
+                    buf = parts[-1] if parts else buf
+                else:
+                    held.extend(parts)
+                    buf = ""
+                pop_chunks(False)
+                while len(tasks) < len(scripts):
+                    i = len(tasks)
+                    tasks[i] = asyncio.create_task(run_one(i, scripts[i], active[0]))
+            if buf.strip():
+                held.append(buf.strip())
+            pop_chunks(True)
+            while len(tasks) < len(scripts):
+                i = len(tasks)
+                tasks[i] = asyncio.create_task(run_one(i, scripts[i], active[0]))
+            if tasks:
+                await asyncio.gather(*tasks.values())
+        except CloudTtsError as exc:
+            ready = [i for i in range(len(scripts)) if self.store.chunk_opus_path(cache, i).exists()]
+            remain = " ".join(scripts[len(ready):])
+            reason = "daily_tts_cap" if "daily_tts_cap" in str(exc) else "on_device"
+            await self._set_article(
+                article_id,
+                cache_key=cache,
+                status=STATUS_FALLBACK,
+                reason=reason,
+                chunks=ready,
+                complete=False,
+                engine=engine,
+                voice=voice,
+                on_device_text=remain,
+            )
+            await self.tg.send(format_alert("narration on-device", article=article_id, reason=reason), failure=True)
+            return {"status": STATUS_FALLBACK, "cache_key": cache, "reason": reason}
+        finally:
+            await cloud.aclose()
+
+        ready = list(range(len(scripts)))
+        record = {
+            "cache_key": cache,
+            "status": STATUS_READY,
+            "chunks": ready,
+            "complete": True,
+            "engine": engines.get(0, engine),
+            "voice": voice,
+            "created_at": time.time(),
+            "article_id": article_id,
+            "duration_s": None,
+        }
+        await self.store.put_cache(cache, record)
+        await self._set_article(article_id, **record)
+        log.info(
+            "tts.job",
+            article=article_id,
+            engine=record["engine"],
+            chunks=len(ready),
+            elapsed_s=round(time.time() - started, 2),
+            first_audio_s=round(time.time() - started, 2) if not first_logged else None,
+        )
+        return {"status": STATUS_READY, "cache_key": cache, "complete": True}
 
     async def _ram_gate(self, cache: str) -> None:
         if not should_defer(self.ram_floor):

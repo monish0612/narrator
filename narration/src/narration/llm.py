@@ -316,6 +316,59 @@ class LlmClient:
                 script = compressed
         return script
 
+    async def iter_spoken_deltas(
+        self,
+        *,
+        title: str,
+        source: str,
+        category: str,
+        article_text: str,
+        article_id: str = "",
+    ):
+        article_text = (article_text or "")[:24000]
+        personal = should_personal_open(article_id)
+        system = PLAIN_EXPLAINER
+        user = build_plain_user(title, source, article_text, personal_open=personal)
+        if is_ai_news(category):
+            system = AI_EXPLAINER_WITH_PARALLEL
+            user = build_ai_user(title, source, article_text, "", personal_open=personal)
+        async for piece in self._gemini_stream(self.model, system, user, temperature=0.4, max_tokens=1024):
+            yield piece
+
+    async def _gemini_stream(self, model: str, system: str, user: str, *, temperature: float, max_tokens: int):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse"
+        body = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_tokens,
+                "thinkingConfig": self._thinking(model),
+            },
+        }
+        async with self._http.stream(
+            "POST", url, headers={"x-goog-api-key": self.gemini_api_key}, json=body
+        ) as resp:
+            if resp.status_code >= 400:
+                raise LlmError(f"llm http {resp.status_code}")
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                raw = line[5:].strip()
+                if not raw or raw == "[DONE]":
+                    continue
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                parts = ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+                for part in parts:
+                    if part.get("thought"):
+                        continue
+                    text = part.get("text") or ""
+                    if text:
+                        yield text
+
 
 def _strip_think(text: str) -> str:
     t = text or ""

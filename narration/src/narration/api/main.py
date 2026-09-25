@@ -22,6 +22,7 @@ from narration.keys import lock_key
 from narration.llm import LlmClient
 from narration.logging import configure_logging, get_logger
 from narration.normalize import build_cache_key
+from narration.tts_cloud import SCRIPT_VERSION, normalize_engine, normalize_voice
 from narration.pipeline import drop_article_audio, mark_listened
 from narration.spoken_host import HOST_TOUCH_VERSION, ensure_host_touch
 from narration.store import STATUS_DELETED, STATUS_FALLBACK, STATUS_QUEUED, STATUS_READY, Store
@@ -65,6 +66,7 @@ class JobIn(BaseModel):
     hd: bool = False
     voice: str | None = None
     model: str | None = None
+    tts_model: str | None = None
     force: bool = False
 
 
@@ -152,11 +154,13 @@ def create_app() -> FastAPI:
     async def enqueue(body: JobIn, _: None = Depends(require_key)):
         s = app.state.settings
         store: Store = app.state.store
+        engine = normalize_engine(body.tts_model)
+        voice = normalize_voice(engine, body.voice)
         cache = build_cache_key(
             article_text=body.text,
-            voice=body.voice or s.tts_voice,
+            voice=voice,
             speed=s.tts_speed,
-            model_version=s.model_version,
+            model_version=f"{SCRIPT_VERSION}+{engine}",
             audio_format=s.audio_format,
             bitrate=s.audio_bitrate,
         )
