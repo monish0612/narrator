@@ -244,7 +244,8 @@ def create_app() -> FastAPI:
         if cache and rec.get("status") == STATUS_READY:
             live = await app.state.store.get_cache(cache)
             opus = app.state.store.opus_path(str(cache))
-            if not live or not opus.exists():
+            chunk0 = app.state.store.chunk_opus_path(str(cache), 0)
+            if (not live and not chunk0.exists()) or (not opus.exists() and not chunk0.exists()):
                 rec["status"] = STATUS_FALLBACK
                 rec["reason"] = "audio_missing"
                 await app.state.store.bind_article(article_id, rec)
